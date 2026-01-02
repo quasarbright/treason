@@ -3,189 +3,158 @@
 ;; read syntax from file/string
 
 (provide (all-defined-out))
-(require "stx.rkt")
+(require racket/syntax-srcloc "stx.rkt")
 
 ;; Read source text and compute actual line/column positions
-;; path? input-port? -> stx?
+;; path? input-port? -> (or stx? eof-object?)
 (define (read-stx source in)
   ;; Read the entire source text to compute accurate end positions
   (define source-text (port->string in))
-  (define syn (read-syntax source (open-input-string source-text)))
-  (and syn (syntax->stx syn #f source-text)))
+  (define text-port (open-input-string source-text source))
+  (port-count-lines! text-port)
+  (define syn (read-syntax source text-port))
+  (if (eof-object? syn)
+      syn
+      (syntax->stx syn source-text)))
 
-;; syntax? (U #f stx?) string? -> stx?
-(define (syntax->stx syn parent source-text)
+;; syntax? string? -> stx?
+(define (syntax->stx syn source-text)
   (define e (syntax-e syn))
-  (define src (or (syntax-source syn) 'unknown))
-  (define line (syntax-line syn))
-  (define col (syntax-column syn))
-  (define pos (syntax-position syn))
-  (define len (syntax-span syn))
+  (define e^
+    (if (list? e)
+        (for/list ([elem e])
+          (syntax->stx elem source-text))
+        e))
+
+  (define sp (srcloc->span (syntax-srcloc syn) source-text))
   
-  ;; Compute actual end line and column from source text
-  (define sp
-    (if (and line col pos len)
-        (let* ([start-line (sub1 line)]
-               [start-col col]
-               [end-pos (+ pos len -1)]  ; -1 because pos is 1-indexed
-               ;; Compute end line/col by counting newlines in the span
-               [end-info (compute-end-position source-text (sub1 pos) end-pos)])
-          (span (loc src start-line start-col)
-                (loc src (car end-info) (cdr end-info))))
-        ;; No source location info
-        (span (loc src 0 0) (loc src 0 0))))
+  (stx e^ sp))
+
+;; srcloc? string? -> span?
+(define (srcloc->span sloc source-text)
+  (match-define (srcloc src line col pos len) sloc)
   
-  ;; Create the stx node with placeholder element
-  (define result-stx (stx 'placeholder sp parent))
+  (unless (and line col pos len)
+    (error 'srcloc->span "location data unavailable"))
   
-  ;; Convert syntax-e result to StxE
-  (define converted-e
-    (cond
-      [(list? e)
-       ;; Recursively convert list elements with this stx as parent
-       (for/list ([elem e])
-         (syntax->stx elem result-stx source-text))]
-      [else e]))  ; symbol, number, boolean, etc.
-  
-  ;; Use mutation to set the actual element, creating proper cyclic structure
-  (set-stx-e! result-stx converted-e)
-  result-stx)
+  (define start-line (sub1 line))
+  (define start-col col)
+  (define-values (end-line end-col) 
+    (compute-end-position source-text
+                          start-line
+                          start-col
+                          (sub1 pos); sub1 because pos is 1-indexed
+                          (sub1 (+ pos len))))
+  (span (loc (or src 'unknown) start-line start-col)
+        (loc (or src 'unknown) end-line end-col)))
 
 ;; Compute end line and column from source text
-;; string? nat? nat? -> (cons nat? nat?)
-(define (compute-end-position source-text start-pos end-pos)
-  (define substring (substring source-text start-pos (min end-pos (string-length source-text))))
-  (define lines (string-split substring "\n"))
+;; all arguments are zero-indexed
+;; enx-pos is exclusive
+;; string? nat? nat? nat? nat? -> (values nat? nat?)
+(define (compute-end-position source-text start-line start-col start-pos end-pos)
+  (define substr (substring source-text start-pos end-pos))
+  (define lines (string-split substr "\n"))
   (define num-newlines (sub1 (length lines)))
-  (define end-line num-newlines)
-  (define end-col (string-length (last lines)))
-  (cons end-line end-col))
+  (define end-line (+ start-line num-newlines))
+  (define end-col
+    (if (zero? num-newlines)
+        (+ start-col (string-length (last lines)))
+        (string-length (last lines))))
+  (values end-line end-col))
 
 (module+ test
   (require rackunit)
   
   ;; Test simple symbol
-  (let* ([source-text "x"]
-         [result (read-stx 'test (open-input-string source-text))])
-    (check-true (stx? result))
-    (check-equal? (stx-e result) 'x)
-    (check-equal? (stx-parent result) #f))
+  (check-equal?
+   (read-stx 'test (open-input-string "x"))
+   (stx 'x (span (loc 'test 0 0) (loc 'test 0 1))))
   
   ;; Test simple list
-  (let* ([source-text "(+ 1 2)"]
-         [result (read-stx 'test (open-input-string source-text))])
-    (check-true (stx? result))
-    (check-true (list? (stx-e result)))
-    (check-equal? (length (stx-e result)) 3)
-    (check-equal? (stx-e (first (stx-e result))) '+)
-    (check-equal? (stx-e (second (stx-e result))) 1)
-    (check-equal? (stx-e (third (stx-e result))) 2))
+  (check-equal?
+   (read-stx 'test (open-input-string "(+ 1 2)"))
+   (stx (list (stx '+ (span (loc 'test 0 1) (loc 'test 0 2)))
+              (stx 1 (span (loc 'test 0 3) (loc 'test 0 4)))
+              (stx 2 (span (loc 'test 0 5) (loc 'test 0 6))))
+        (span (loc 'test 0 0) (loc 'test 0 7))))
   
-  ;; Test parent references are cyclic
-  (let* ([source-text "(foo bar)"]
-         [result (read-stx 'test (open-input-string source-text))])
-    (define children (stx-e result))
-    (check-equal? (stx-parent (first children)) result)
-    (check-equal? (stx-parent (second children)) result))
-  
-  ;; Test nested list with proper parent chain
-  (let* ([source-text "(a (b c))"]
-         [result (read-stx 'test (open-input-string source-text))])
-    (define outer-children (stx-e result))
-    (define inner-list (second outer-children))
-    (define inner-children (stx-e inner-list))
-    (check-equal? (stx-parent inner-list) result)
-    (check-equal? (stx-parent (first inner-children)) inner-list)
-    (check-equal? (stx-parent (second inner-children)) inner-list))
-  
-  ;; Test span computation for single line
-  (let* ([source-text "(+ 1 2)"]
-         [result (read-stx 'test (open-input-string source-text))])
-    (define sp (stx-span result))
-    (check-equal? (loc-line (span-start sp)) 0)
-    (check-equal? (loc-column (span-start sp)) 0)
-    (check-equal? (loc-line (span-end sp)) 0))
-  
-  ;; Test span computation for multi-line
-  (let* ([source-text "(define x\n  42)"]
-         [result (read-stx 'test (open-input-string source-text))])
-    (define sp (stx-span result))
-    (check-equal? (loc-line (span-start sp)) 0)
-    (check-equal? (loc-line (span-end sp)) 1))
+  ;; Test nested list
+  (check-equal?
+   (read-stx 'test (open-input-string "(a (b c))"))
+   (stx (list (stx 'a (span (loc 'test 0 1) (loc 'test 0 2)))
+              (stx (list (stx 'b (span (loc 'test 0 4) (loc 'test 0 5)))
+                         (stx 'c (span (loc 'test 0 6) (loc 'test 0 7))))
+                   (span (loc 'test 0 3) (loc 'test 0 8))))
+        (span (loc 'test 0 0) (loc 'test 0 9))))
   
   ;; Test multiline list not starting from line 0
-  (let* ([source-text "x\ny\n(foo\n bar\n baz)"]
-         [result (read-stx 'test (open-input-string source-text))])
-    ;; The result is the entire module-begin, get the list at line 2
-    (define children (stx-e result))
-    (define the-list (third children))
-    (define sp (stx-span the-list))
-    (check-equal? (loc-line (span-start sp)) 2)
-    (check-equal? (loc-column (span-start sp)) 0)
-    (check-equal? (loc-line (span-end sp)) 4)
-    (check-equal? (loc-column (span-end sp)) 5))
+  (check-equal?
+   (read-stx 'test (open-input-string "(x\ny\n(foo\n bar\n baz))"))
+   (stx (list (stx 'x (span (loc 'test 0 1) (loc 'test 0 2)))
+              (stx 'y (span (loc 'test 1 0) (loc 'test 1 1)))
+              (stx (list (stx 'foo (span (loc 'test 2 1) (loc 'test 2 4)))
+                         (stx 'bar (span (loc 'test 3 1) (loc 'test 3 4)))
+                         (stx 'baz (span (loc 'test 4 1) (loc 'test 4 4))))
+                   (span (loc 'test 2 0) (loc 'test 4 5))))
+        (span (loc 'test 0 0) (loc 'test 4 6))))
   
   ;; Test nested multiline list with precise positions
-  (let* ([source-text "(outer\n  (inner\n    a\n    b)\n  c)"]
-         [result (read-stx 'test (open-input-string source-text))])
-    (define outer-sp (stx-span result))
-    (check-equal? (loc-line (span-start outer-sp)) 0)
-    (check-equal? (loc-column (span-start outer-sp)) 0)
-    (check-equal? (loc-line (span-end outer-sp)) 4)
-    
-    (define children (stx-e result))
-    (define inner-list (second children))
-    (define inner-sp (stx-span inner-list))
-    (check-equal? (loc-line (span-start inner-sp)) 1)
-    (check-equal? (loc-column (span-start inner-sp)) 2)
-    (check-equal? (loc-line (span-end inner-sp)) 3)
-    (check-equal? (loc-column (span-end inner-sp)) 6))
+  (check-equal?
+   (read-stx 'test (open-input-string "(outer\n  (inner\n    a\n    b)\n  c)"))
+   (stx (list (stx 'outer (span (loc 'test 0 1) (loc 'test 0 6)))
+              (stx (list (stx 'inner (span (loc 'test 1 3) (loc 'test 1 8)))
+                         (stx 'a (span (loc 'test 2 4) (loc 'test 2 5)))
+                         (stx 'b (span (loc 'test 3 4) (loc 'test 3 5))))
+                   (span (loc 'test 1 2) (loc 'test 3 6)))
+              (stx 'c (span (loc 'test 4 2) (loc 'test 4 3))))
+        (span (loc 'test 0 0) (loc 'test 4 4))))
   
   ;; Test list starting mid-line on non-zero line
-  (let* ([source-text "x\n  y  (a b c)"]
-         [result (read-stx 'test (open-input-string source-text))])
-    (define children (stx-e result))
-    (define the-list (third children))
-    (define sp (stx-span the-list))
-    (check-equal? (loc-line (span-start sp)) 1)
-    (check-equal? (loc-column (span-start sp)) 5)
-    (check-equal? (loc-line (span-end sp)) 1))
+  (check-equal?
+   (read-stx 'test (open-input-string "(x\n  y  (a b c))"))
+   (stx (list (stx 'x (span (loc 'test 0 1) (loc 'test 0 2)))
+              (stx 'y (span (loc 'test 1 2) (loc 'test 1 3)))
+              (stx (list (stx 'a (span (loc 'test 1 6) (loc 'test 1 7)))
+                         (stx 'b (span (loc 'test 1 8) (loc 'test 1 9)))
+                         (stx 'c (span (loc 'test 1 10) (loc 'test 1 11))))
+                   (span (loc 'test 1 5) (loc 'test 1 12))))
+        (span (loc 'test 0 0) (loc 'test 1 13))))
   
   ;; Test deeply nested multiline structure
-  (let* ([source-text "(a\n (b\n  (c\n   d)))"]
-         [result (read-stx 'test (open-input-string source-text))])
-    (define level1 (stx-e result))
-    (define level2-list (second level1))
-    (define level2 (stx-e level2-list))
-    (define level3-list (second level2))
-    (define level3 (stx-e level3-list))
-    
-    ;; Check spans at each level
-    (check-equal? (loc-line (span-start (stx-span result))) 0)
-    (check-equal? (loc-line (span-end (stx-span result))) 3)
-    
-    (check-equal? (loc-line (span-start (stx-span level2-list))) 1)
-    (check-equal? (loc-line (span-end (stx-span level2-list))) 3)
-    
-    (check-equal? (loc-line (span-start (stx-span level3-list))) 2)
-    (check-equal? (loc-line (span-end (stx-span level3-list))) 3))
+  (check-equal?
+   (read-stx 'test (open-input-string "(a\n (b\n  (c\n   d)))"))
+   (stx (list (stx 'a (span (loc 'test 0 1) (loc 'test 0 2)))
+              (stx (list (stx 'b (span (loc 'test 1 2) (loc 'test 1 3)))
+                         (stx (list (stx 'c (span (loc 'test 2 3) (loc 'test 2 4)))
+                                    (stx 'd (span (loc 'test 3 3) (loc 'test 3 4))))
+                              (span (loc 'test 2 2) (loc 'test 3 5))))
+                   (span (loc 'test 1 1) (loc 'test 3 6))))
+        (span (loc 'test 0 0) (loc 'test 3 7))))
+  
+  ;; Test with various data types
+  (check-equal?
+   (read-stx 'test (open-input-string "(#t #f 42 \"str\")"))
+   (stx (list (stx #t (span (loc 'test 0 1) (loc 'test 0 3)))
+              (stx #f (span (loc 'test 0 4) (loc 'test 0 6)))
+              (stx 42 (span (loc 'test 0 7) (loc 'test 0 9)))
+              (stx "str" (span (loc 'test 0 10) (loc 'test 0 15))))
+        (span (loc 'test 0 0) (loc 'test 0 16))))
+  
+  ;; Test empty list
+  (check-equal?
+   (read-stx 'test (open-input-string "()"))
+   (stx '() (span (loc 'test 0 0) (loc 'test 0 2))))
+
+  ;; Test eof
+  (check-equal?
+   (read-stx 'test (open-input-string ""))
+   eof)
+
   
   ;; Test compute-end-position helper
   (let ([text "hello\nworld"])
-    (check-equal? (compute-end-position text 0 4) (cons 0 5))
-    (check-equal? (compute-end-position text 0 10) (cons 1 5)))
-  
-  ;; Test with various data types
-  (let* ([source-text "(#t #f 42 \"str\")"]
-         [result (read-stx 'test (open-input-string source-text))])
-    (define children (stx-e result))
-    (check-equal? (stx-e (first children)) #t)
-    (check-equal? (stx-e (second children)) #f)
-    (check-equal? (stx-e (third children)) 42)
-    (check-equal? (stx-e (fourth children)) "str"))
-  
-  ;; Test empty list
-  (let* ([source-text "()"]
-         [result (read-stx 'test (open-input-string source-text))])
-    (check-true (list? (stx-e result)))
-    (check-equal? (length (stx-e result)) 0)))
+    ;; substring from 0 to 4 is "hell", so end is at column 4 on line 0
+    (check-equal? (compute-end-position text 0 0 0 4) (cons 0 4))
+    ;; substring from 0 to 10 is "hello\nworl", so end is at column 4 on line 1
+    (check-equal? (compute-end-position text 0 0 0 10) (cons 1 4))))

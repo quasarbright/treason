@@ -5,11 +5,10 @@
 (provide (all-defined-out))
 
 ;; A Stx is a
-(struct stx [e span parent] #:transparent #:mutable)
+(struct stx [e span] #:transparent)
 ;; where
 ;; e is a StxE
 ;; span is a Span
-;; parent is a (U #f Stx)
 ;; Represents concrete syntax of a program
 ;; TODO add fields for macro expansion, like origin/previous
 
