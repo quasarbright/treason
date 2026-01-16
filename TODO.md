@@ -1,1 +1,2 @@
 - [x] no parent, immutable, simplify tests. macro expansion will make parent weird
+- [ ] handle eof

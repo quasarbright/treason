@@ -37,12 +37,23 @@
 ;; A Response
 ;; A Notification
 
+;; TODO https://docs.racket-lang.org/reference/logging.html#%28tech._current._logger%29
+;; TODO this creates logs.txt in the vscode workspace of the user, not this repo lol
+(define log-output-port (open-output-file "logs.txt" #:exists 'replace))
+(define (log str)
+  (parameterize ([current-output-port log-output-port])
+    (displayln str)))
+
 (define (main [in (current-input-port)] [out (current-output-port)])
+  (log (format "started server"))
   (let loop ()
     (define msg (read-message in))
+    (log (format "received message ~v" msg))
     (match msg
       [(request id method parameters)
-       (write-message (response id "foo" 'null) out)]
+       (match method
+         ['initialize (write-message (response id (hasheq 'capabilities (hasheq)) 'null))]
+         [_ (write-message (response id 'null (hasheq 'code -32601 'message (format "unknown method: ~a" method))))])]
       [(notification method parameters)
        (void)])
     (loop)))
