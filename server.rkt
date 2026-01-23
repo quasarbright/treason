@@ -54,68 +54,79 @@ do we want actual types instead of json?
 |#
 
 (define (main [in (current-input-port)] [out (current-output-port)])
+  (define srv (new server%))
   (log-server-info "started server")
   (let loop ()
     (match (read-message in)
       [(request id method parameters)
-       (match method
-         ['initialize
-          (write-message (response id (hasheq 'capabilities
-                                                           (hasheq 'textDocumentSync
-                                                                   (hasheq 'openClose #t
-                                                                           'change TextDocumentSyncKind/Full)
-                                                                   'documentSymbolProvider #t))
-                                                   'null))]
-         ['textDocument/documentSymbol
-          (match parameters
-            [(hash* ['textDocument (hash* ['uri uri])])
-             (define text-document (hash-ref text-documents uri (lambda () (error 'textDocument/documentSymbol "unknown document ~a" uri))))
-             (define stx (string->stx uri (hash-ref text-document 'text)))
-             (write-message (response id (get-document-symbols stx) 'null))])]
-         [_
-          (write-message (response id 'null (hasheq 'code -32601 'message (format "unknown method: ~a" method)))
-                         out)])]
+       (define rsp
+         (if (object-method-arity-includes? srv method 1)
+             (with-handlers ([exn:fail? (lambda (err) (log-server-error "~a" err) (response id 'null (hasheq 'code -32603 'message (format "internal error: ~a" err))))])
+               (define data (dynamic-send srv method parameters))
+               (response id data 'null))
+             (response id 'null (hasheq 'code -32601 'message (format "Unknown method: ~a" method)))))
+       (write-message rsp out)]
       [(notification method parameters)
-       (match method
-         ['textDocument/didOpen
-          (define text-document (hash-ref parameters 'textDocument))
-          (define uri (hash-ref text-document 'uri))
-          (hash-set! text-documents uri text-document)]
-         ['textDocument/didChange
-          (match parameters
-            [(hash*
-              ['textDocument (hash* ['version version] ['uri uri])]
-              ['contentChanges changes])
-             (define text-document
-               (hash-ref text-documents
-                         uri
-                         (lambda () (error 'textDocument/didChange "unknown document: ~a" uri))))
-             (define old-text (hash-ref text-document 'text))
-             (define new-text
-               (for/fold ([new-text old-text])
-                         ([change changes])
-                 (match change
-                   [(hash* ['text text] ['range range #:default #f])
-                    (match range
-                        [(hash* ['start (hash* ['line start-line] ['character start-col])]
-                                ['end (hash* ['line end-line] ['character end-col])])
-                         (define start-index (position->index new-text start-line start-col))
-                         (define dest (string-copy new-text))
-                         (string-copy! dest text start-index)]
-                        [_ text])])))
-             (define new-text-document
-               (hash-set (hash-set text-document 'text new-text)
-                         'version version))
-             (hash-set! text-documents uri new-text-document)])]
-         ['textDocument/didClose
-          (match parameters
-            [(hash* ['textDocument (hash* ['uri uri])])
-             (hash-remove! text-documents uri)])]
-         [_ (void)])])
+       (when (object-method-arity-includes? srv method 1)
+         (with-handlers ([exn:fail? (lambda (err) (log-server-error "~a" err))])
+           (dynamic-send srv method parameters)))])
     (loop)))
 
-;; maps uris to text documents
-(define text-documents (make-hash))
+(define server%
+  (class object%
+    (super-new)
+    ;; maps uris to text documents
+    (field [text-documents (make-hash)])
+
+    (define/public (initialize parameters)
+      (hasheq 'capabilities
+              (hasheq 'textDocumentSync
+                      (hasheq 'openClose #t
+                              'change TextDocumentSyncKind/Full)
+                      'documentSymbolProvider #t)))
+    (define/public (textDocument/documentSymbol parameters)
+      (match parameters
+        [(hash* ['textDocument (hash* ['uri uri])])
+         (define text-document (hash-ref text-documents uri (lambda () (error 'textDocument/documentSymbol "unknown document ~a" uri))))
+         (define stx (string->stx uri (hash-ref text-document 'text)))
+         (get-document-symbols stx)]))
+    
+    (define/public (textDocument/didOpen parameters)
+      (define text-document (hash-ref parameters 'textDocument))
+      (define uri (hash-ref text-document 'uri))
+      (hash-set! text-documents uri text-document))
+    
+    (define/public (textDocument/didChange parameters)
+      (match parameters
+        [(hash*
+          ['textDocument (hash* ['version version] ['uri uri])]
+          ['contentChanges changes])
+         (define text-document
+           (hash-ref text-documents
+                     uri
+                     (lambda () (error 'textDocument/didChange "unknown document: ~a" uri))))
+         (define old-text (hash-ref text-document 'text))
+         (define new-text
+           (for/fold ([new-text old-text])
+                     ([change changes])
+             (match change
+               [(hash* ['text text] ['range range #:default #f])
+                (match range
+                  [(hash* ['start (hash* ['line start-line] ['character start-col])]
+                          ['end (hash* ['line end-line] ['character end-col])])
+                   (define start-index (position->index new-text start-line start-col))
+                   (define dest (string-copy new-text))
+                   (string-copy! dest text start-index)]
+                  [_ text])])))
+         (define new-text-document
+           (hash-set (hash-set text-document 'text new-text)
+                     'version version))
+         (hash-set! text-documents uri new-text-document)]))
+    
+    (define/public (textDocument/didClose parameters)
+      (match parameters
+        [(hash* ['textDocument (hash* ['uri uri])])
+         (hash-remove! text-documents uri)]))))
 
 ;; string? natural? natural? -> natural?
 ;; computes the index corresponding to the given position in the text

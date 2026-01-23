@@ -2,7 +2,7 @@
 - [ ] handle eof
 - [ ] graceful error handling
 - [ ] properly link the server executable so the command in the extension can just be treason-language-server and not a hard-coded path
-- [ ] decouple server logic from read/write over wire
+- [x] decouple server logic from read/write over wire
 - [ ] decouple server logic from json, or at least make convenient wrappers
 - [ ] test after making server more testable
 - [ ] shutdown
