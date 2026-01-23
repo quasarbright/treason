@@ -41,16 +41,6 @@
 ;; A Response
 ;; A Notification
 
-;; TODO graceful error handling
-;; TODO decouple server logic from read/write over wire
-;; TODO decouple server logic from json, or at least make convenient wrappers
-;; TODO add new server capabilities
-;; TODO test after making server more testable
-;; TODO shutdown
-;; TODO cancellation
-
-;; TODO figure out client capabilities once you start sending diagnostics. included in the initialize request
-
 #|
 idea for abstraction
 - server class with class methods for lsp requests/notifications. each would take in params and return either void (for notifications) or json (for response)

@@ -1,2 +1,11 @@
 - [x] no parent, immutable, simplify tests. macro expansion will make parent weird
 - [ ] handle eof
+- [ ] graceful error handling
+- [ ] properly link the server executable so the command in the extension can just be treason-language-server and not a hard-coded path
+- [ ] decouple server logic from read/write over wire
+- [ ] decouple server logic from json, or at least make convenient wrappers
+- [ ] test after making server more testable
+- [ ] shutdown
+- [ ] figure out client capabilities once you start sending diagnostics. included in the initialize request
+- [ ] explicitly define terminology like line, column, position, index, etc.
+- [ ] cancellation? optional
