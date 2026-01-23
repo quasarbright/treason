@@ -6,7 +6,11 @@
 (provide)
 (module+ main (main))
 (module+ test (require rackunit))
-(require json)
+(require json
+         "stx.rkt"
+         "reader.rkt"
+         "constants.rkt"
+         "server-logging.rkt")
 
 ;; An Request is a
 (struct request [id method params] #:transparent)
@@ -37,26 +41,137 @@
 ;; A Response
 ;; A Notification
 
-;; TODO https://docs.racket-lang.org/reference/logging.html#%28tech._current._logger%29
-;; TODO this creates logs.txt in the vscode workspace of the user, not this repo lol
-(define log-output-port (open-output-file "logs.txt" #:exists 'replace))
-(define (log str)
-  (parameterize ([current-output-port log-output-port])
-    (displayln str)))
+;; TODO graceful error handling
+;; TODO decouple server logic from read/write over wire
+;; TODO decouple server logic from json, or at least make convenient wrappers
+;; TODO add new server capabilities
+;; TODO test after making server more testable
+;; TODO shutdown
+;; TODO cancellation
+
+;; TODO figure out client capabilities once you start sending diagnostics. included in the initialize request
+
+#|
+idea for abstraction
+- server class with class methods for lsp requests/notifications. each would take in params and return either void (for notifications) or json (for response)
+- server just dispatches using dynamic-send
+- server will eventually need a client for diagnostic reporting. will be a proxy. can test with a mock
+- server can initially be sync but client will need to be async and do continuation stuff if you need a response. then the server will need to be async so it doesn't block
+- for async stuff, have a pool of pending requests keyed by id, each with a continuation for resuming upon response
+
+not sure hot to do automatic capabilities
+do we want actual types instead of json?
+|#
 
 (define (main [in (current-input-port)] [out (current-output-port)])
-  (log (format "started server"))
+  (log-server-info "started server")
   (let loop ()
-    (define msg (read-message in))
-    (log (format "received message ~v" msg))
-    (match msg
+    (match (read-message in)
       [(request id method parameters)
        (match method
-         ['initialize (write-message (response id (hasheq 'capabilities (hasheq)) 'null))]
-         [_ (write-message (response id 'null (hasheq 'code -32601 'message (format "unknown method: ~a" method))))])]
+         ['initialize
+          (write-message (response id (hasheq 'capabilities
+                                                           (hasheq 'textDocumentSync
+                                                                   (hasheq 'openClose #t
+                                                                           'change TextDocumentSyncKind/Full)
+                                                                   'documentSymbolProvider #t))
+                                                   'null))]
+         ['textDocument/documentSymbol
+          (match parameters
+            [(hash* ['textDocument (hash* ['uri uri])])
+             (define text-document (hash-ref text-documents uri (lambda () (error 'textDocument/documentSymbol "unknown document ~a" uri))))
+             (define stx (string->stx uri (hash-ref text-document 'text)))
+             (write-message (response id (get-document-symbols stx) 'null))])]
+         [_
+          (write-message (response id 'null (hasheq 'code -32601 'message (format "unknown method: ~a" method)))
+                         out)])]
       [(notification method parameters)
-       (void)])
+       (match method
+         ['textDocument/didOpen
+          (define text-document (hash-ref parameters 'textDocument))
+          (define uri (hash-ref text-document 'uri))
+          (hash-set! text-documents uri text-document)]
+         ['textDocument/didChange
+          (match parameters
+            [(hash*
+              ['textDocument (hash* ['version version] ['uri uri])]
+              ['contentChanges changes])
+             (define text-document
+               (hash-ref text-documents
+                         uri
+                         (lambda () (error 'textDocument/didChange "unknown document: ~a" uri))))
+             (define old-text (hash-ref text-document 'text))
+             (define new-text
+               (for/fold ([new-text old-text])
+                         ([change changes])
+                 (match change
+                   [(hash* ['text text] ['range range #:default #f])
+                    (match range
+                        [(hash* ['start (hash* ['line start-line] ['character start-col])]
+                                ['end (hash* ['line end-line] ['character end-col])])
+                         (define start-index (position->index new-text start-line start-col))
+                         (define dest (string-copy new-text))
+                         (string-copy! dest text start-index)]
+                        [_ text])])))
+             (define new-text-document
+               (hash-set (hash-set text-document 'text new-text)
+                         'version version))
+             (hash-set! text-documents uri new-text-document)])]
+         ['textDocument/didClose
+          (match parameters
+            [(hash* ['textDocument (hash* ['uri uri])])
+             (hash-remove! text-documents uri)])]
+         [_ (void)])])
     (loop)))
+
+;; maps uris to text documents
+(define text-documents (make-hash))
+
+;; string? natural? natural? -> natural?
+;; computes the index corresponding to the given position in the text
+;; line and col are 0-indexed
+(define (position->index text line col)
+  (let loop ([idx 0] [current-line 0])
+    (cond
+      [(= current-line line)
+       ;; assumes col doesn't go past end of line
+       (+ idx col)]
+      [(>= idx (string-length text))
+       idx]
+      [(char=? (string-ref text idx) #\newline)
+       (loop (add1 idx) (add1 current-line))]
+      [else
+       (loop (add1 idx) current-line)])))
+
+(module+ test
+  (check-equal? (position->index "hello" 0 0) 0)
+  (check-equal? (position->index "hello" 0 5) 5)
+  (check-equal? (position->index "hello\nworld" 0 0) 0)
+  (check-equal? (position->index "hello\nworld" 1 0) 6)
+  (check-equal? (position->index "hello\nworld" 1 5) 11)
+  (check-equal? (position->index "line1\nline2\nline3" 2 3) 15))
+
+;; stx? -> jsexpr?
+(define (get-document-symbols syn)
+  (match syn
+    [(stx (list syn ...) _)
+     (append-map get-document-symbols syn)]
+    [(stx (? symbol? id) spn)
+     (list (hash 'name (symbol->string id)
+                 'kind SymbolKind/Variable
+                 'location (span->location spn)))]
+    [_ (list)]))
+
+(define (span->location spn)
+  (hash 'uri (loc-source (span-start spn))
+        'range (span->range spn)))
+
+(define (span->range spn)
+  (hash 'start (loc->position (span-start spn))
+        'end (loc->position (span-end spn))))
+
+(define (loc->position lc)
+  (hash 'line (loc-line lc) 'character (loc-column lc)))
 
 ;; -> message?
 (define (read-message [in (current-input-port)])
@@ -64,7 +179,7 @@
   (define content-length (string->number (hash-ref headers 'Content-Length (lambda () (error 'read-message "missing Content-Length header")))))
   (define bytes (read-bytes content-length in))
   (define js-str (bytes->string/utf-8 bytes))
-
+  (log-server-debug "received message: ~a" js-str)
   (define js (string->jsexpr js-str))
   (match js
     [(hash* ['id id] ['method method] ['params params])
@@ -143,6 +258,7 @@
              'method (symbol->string method)
              'params params)]))
   (define str (jsexpr->string js))
+  (log-server-debug "writing message ~a" str)
   (define bytes (string->bytes/utf-8 str))
   (define len (bytes-length bytes))
   (display (format "Content-Length: ~a\r\n\r\n~a" len str))

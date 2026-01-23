@@ -5,6 +5,10 @@
 (provide (all-defined-out))
 (require racket/syntax-srcloc "stx.rkt")
 
+;; string? string? -> stx?
+(define (string->stx source text)
+  (read-stx source (open-input-string text)))
+
 ;; Read source text and compute actual line/column positions
 ;; path? input-port? -> (or stx? eof-object?)
 (define (read-stx source in)
