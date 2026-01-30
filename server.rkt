@@ -75,21 +75,34 @@ do we want actual types instead of json?
 (define server%
   (class object%
     (super-new)
+
     ;; maps uris to text documents
     (field [text-documents (make-hash)])
 
     (define/public (initialize parameters)
       (hasheq 'capabilities
-              (hasheq 'textDocumentSync
-                      (hasheq 'openClose #t
-                              'change TextDocumentSyncKind/Full)
-                      'documentSymbolProvider #t)))
+              (hasheq 'textDocumentSync (hasheq 'openClose #t
+                                                'change TextDocumentSyncKind/Full)
+                      'documentSymbolProvider #t
+                      'definitionProvider #t)))
+
     (define/public (textDocument/documentSymbol parameters)
       (match parameters
         [(hash* ['textDocument (hash* ['uri uri])])
          (define text-document (hash-ref text-documents uri (lambda () (error 'textDocument/documentSymbol "unknown document ~a" uri))))
          (define stx (string->stx uri (hash-ref text-document 'text)))
          (get-document-symbols stx)]))
+    
+    (define/public (textDocument/definition parameters)
+      (match parameters
+        [(hash* ['textDocument (hash* ['uri uri])]
+                ['position pos])
+         (define text-document (hash-ref text-documents uri (lambda () (error 'textDocument/documentSymbol "unknown document ~a" uri))))
+         (define stx (string->stx uri (hash-ref text-document 'text)))
+         (define result (goto-definition stx (position->loc pos uri)))
+         (if result
+             (span->location (stx-span result))
+             'null)]))
     
     (define/public (textDocument/didOpen parameters)
       (define text-document (hash-ref parameters 'textDocument))
@@ -152,16 +165,85 @@ do we want actual types instead of json?
   (check-equal? (position->index "hello\nworld" 1 5) 11)
   (check-equal? (position->index "line1\nline2\nline3" 2 3) 15))
 
-;; stx? -> jsexpr?
+;; stx? -> (listof (hash 'name string? 'kind SymbolKind 'location Location))
 (define (get-document-symbols syn)
   (match syn
-    [(stx (list syn ...) _)
-     (append-map get-document-symbols syn)]
-    [(stx (? symbol? id) spn)
-     (list (hash 'name (symbol->string id)
+    [(stx (list (stx 'let _) (stx (list (stx (list (stx x x-span) rhs) _)) _) body) _)
+     (cons (hash 'name (symbol->string x)
                  'kind SymbolKind/Variable
-                 'location (span->location spn)))]
+                 'location (span->location x-span))
+           (append-map get-document-symbols (list rhs body)))]
     [_ (list)]))
+
+;; stx? loc? -> (or #f stx?)
+;; takes in program and a location of a reference
+;; returns binding identifier or #f if there is none
+(define (goto-definition syn lc)
+  (let loop ([syn syn]
+             ; maps binding symbol to binding identifier
+             [bindings (hash)])
+    (match syn
+      [(stx (list (stx 'let _) (stx (list (stx (list (and x-syn (stx x x-span)) rhs) _)) _) body) _)
+       (cond
+         ;; goto-definition on the binding site returns itself
+         [(loc-in-span? lc x-span)
+          x-syn]
+         [else
+          (define rhs-result (loop rhs bindings))
+          (or rhs-result
+              (loop body (hash-set bindings x x-syn)))])]
+      [(stx (? symbol? id) spn)
+       (and (loc-in-span? lc spn)
+            (hash-ref bindings id #f))]
+      [_ #f])))
+
+(module+ test
+  (let ([syn (string->stx "test.tsn" "(let ([x 2]) x)")])
+    (check-equal? (goto-definition syn (loc "test.tsn" 0 13))
+                  (stx 'x (span (loc "test.tsn" 0 7) (loc "test.tsn" 0 8))))
+    ;; loc is the binding site
+    (check-equal? (goto-definition syn (loc "test.tsn" 0 7))
+                  (stx 'x (span (loc "test.tsn" 0 7) (loc "test.tsn" 0 8))))
+    ;; loc is a space
+    (check-equal? (goto-definition syn (loc "test.tsn" 0 12))
+                  #f)
+    ;; loc is not an identifier
+    (check-equal? (goto-definition syn (loc "test.tsn" 0 9))
+                  #f)
+    ;; loc is an unbound identifier
+    (check-equal? (goto-definition (string->stx "test.tsn" "(let ([x 2]) y)")
+                                   (loc "test.tsn" 0 13))
+                  #f)
+    ;; shadowing
+    (check-equal? (goto-definition (string->stx "test.tsn" "(let ([x 2]) (let ([x 3]) x))")
+                                   (loc "test.tsn" 0 26))
+                  (stx 'x (span (loc "test.tsn" 0 20) (loc "test.tsn" 0 21))))
+    ;; shadowing binding site
+    (check-equal? (goto-definition (string->stx "test.tsn" "(let ([x 2]) (let ([x 3]) x))")
+                                   (loc "test.tsn" 0 20))
+                  (stx 'x (span (loc "test.tsn" 0 20) (loc "test.tsn" 0 21))))))
+
+;; loc? span? -> boolean?
+;; is the location contained within the span?
+(define (loc-in-span? lc spn)
+  (match spn
+    [(span lc-start lc-end)
+     (and (loc<=? lc-start lc)
+          (loc<? lc lc-end))]))
+
+;; is lc1 before or on lc2?
+(define (loc<=? lc1 lc2)
+  (or (equal? lc1 lc2)
+      (loc<? lc1 lc2)))
+
+;; is lc1 before lc2?
+(define (loc<? lc1 lc2)
+  (match* (lc1 lc2)
+    [((loc src1 line1 col1) (loc src2 line2 col2))
+     (and (equal? src1 src2)
+          (if (= line1 line2)
+              (< col1 col2)
+              (< line1 line2)))]))
 
 (define (span->location spn)
   (hash 'uri (loc-source (span-start spn))
@@ -173,6 +255,11 @@ do we want actual types instead of json?
 
 (define (loc->position lc)
   (hash 'line (loc-line lc) 'character (loc-column lc)))
+
+(define (position->loc pos source)
+  (match pos
+    [(hash* ['line line] ['character col])
+     (loc source line col)]))
 
 ;; -> message?
 (define (read-message [in (current-input-port)])

@@ -9,3 +9,9 @@
 - [ ] figure out client capabilities once you start sending diagnostics. included in the initialize request
 - [ ] explicitly define terminology like line, column, position, index, etc.
 - [ ] cancellation? optional
+- [ ] parse the file on update and store ast, don't want to parse on every operation
+- [ ] stx patterns or stx matching
+- [ ] go to definition
+- [ ] report diagnostics
+- [x] consider decoupling LSP stuff from language stuff. For example, goto-definition returns a result in LSP format and takes in an LSP position, even though stx and spans are the internal types
+- [ ] when you do "get references", make sure `gd` on definition site fetches references. Currently, goto-definition on the binding site returns `#f`. Might need to make it return the binding site anyway.
