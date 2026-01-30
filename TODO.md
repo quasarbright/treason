@@ -1,8 +1,6 @@
-- [x] no parent, immutable, simplify tests. macro expansion will make parent weird
 - [ ] handle eof
 - [ ] graceful error handling
 - [ ] properly link the server executable so the command in the extension can just be treason-language-server and not a hard-coded path
-- [x] decouple server logic from read/write over wire
 - [ ] decouple server logic from json, or at least make convenient wrappers
 - [ ] test after making server more testable
 - [ ] shutdown
@@ -10,8 +8,11 @@
 - [ ] explicitly define terminology like line, column, position, index, etc.
 - [ ] cancellation? optional
 - [ ] parse the file on update and store ast, don't want to parse on every operation
+  - [ ] define a `find-enclosing-sexpr: loc? -> (or #f stx?)` which finds the enclosing sexpr. goto-definition and goto-references can just do a eq? check to compare identifiers with the given sexpr instead of checking for location. you could also cache parent references to make this even easier.
 - [ ] stx patterns or stx matching
-- [ ] go to definition
 - [ ] report diagnostics
+- [x] no parent, immutable, simplify tests. macro expansion will make parent weird
+- [x] decouple server logic from read/write over wire
+- [x] go to definition
 - [x] consider decoupling LSP stuff from language stuff. For example, goto-definition returns a result in LSP format and takes in an LSP position, even though stx and spans are the internal types
-- [ ] when you do "get references", make sure `gd` on definition site fetches references. Currently, goto-definition on the binding site returns `#f`. Might need to make it return the binding site anyway.
+- [x] when you do "get references", make sure `gd` on definition site fetches references. Currently, goto-definition on the binding site returns `#f`. Might need to make it return the binding site anyway.

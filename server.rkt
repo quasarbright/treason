@@ -84,7 +84,8 @@ do we want actual types instead of json?
               (hasheq 'textDocumentSync (hasheq 'openClose #t
                                                 'change TextDocumentSyncKind/Full)
                       'documentSymbolProvider #t
-                      'definitionProvider #t)))
+                      'definitionProvider #t
+                      'referencesProvider #t)))
 
     (define/public (textDocument/documentSymbol parameters)
       (match parameters
@@ -103,6 +104,15 @@ do we want actual types instead of json?
          (if result
              (span->location (stx-span result))
              'null)]))
+    
+    (define/public (textDocument/references parameters)
+      (match parameters
+        [(hash* ['textDocument (hash* ['uri uri])]
+                ['position pos])
+         (define text-document (hash-ref text-documents uri (lambda () (error 'textDocument/documentSymbol "unknown document ~a" uri))))
+         (define stx (string->stx uri (hash-ref text-document 'text)))
+         (for/list ([id (find-references stx (position->loc pos uri))])
+           (span->location (stx-span id)))]))
     
     (define/public (textDocument/didOpen parameters)
       (define text-document (hash-ref parameters 'textDocument))
@@ -222,6 +232,50 @@ do we want actual types instead of json?
     (check-equal? (goto-definition (string->stx "test.tsn" "(let ([x 2]) (let ([x 3]) x))")
                                    (loc "test.tsn" 0 20))
                   (stx 'x (span (loc "test.tsn" 0 20) (loc "test.tsn" 0 21))))))
+
+;; stx? loc? -> (or #f (listof stx?))
+;; #f when it can't even find the binder
+(define (find-references syn lc)
+  (let loop ([syn syn])
+    (match syn
+      [(stx (list (stx 'let _) (stx (list (stx (list (stx x x-span) rhs) _)) _) body) _)
+       (if
+        (loc-in-span? lc x-span)
+        ;; found the binder, now collect references in body
+        (find-references/help body x)
+        (or (loop rhs)
+            (loop body)))]
+      [_ #f])))
+
+(module+ test
+  (check-equal? (find-references (string->stx "test.tsn" "(let ([x 2]) x)")
+                                 (loc "test.tsn" 0 7))
+                (list (stx 'x (span (loc "test.tsn" 0 13) (loc "test.tsn" 0 14)))))
+  ;; shadowing, don't include unbound
+  (check-equal? (find-references (string->stx "test.tsn" "(let ([x x]) (let ([x x]) x))")
+                                 (loc "test.tsn" 0 7))
+                (list (stx 'x (span (loc "test.tsn" 0 22) (loc "test.tsn" 0 23)))))
+  ;; multiple references
+  (check-equal? (find-references (string->stx "test.tsn" "(let ([x 2]) (let ([y x]) x))")
+                                 (loc "test.tsn" 0 7))
+                (list (stx 'x (span (loc "test.tsn" 0 22) (loc "test.tsn" 0 23)))
+                      (stx 'x (span (loc "test.tsn" 0 26) (loc "test.tsn" 0 27))))))
+
+;; stx? symbol? -> (listof stx?)
+;; find references of x in syn
+(define (find-references/help syn x)
+  (match syn
+    [(stx (list (stx 'let _) (stx (list (stx (list (stx y _) rhs) _)) _) body) _)
+     (append (find-references/help rhs x)
+             (if (eq? x y)
+                 ;; shadowed, no more references
+                 (list)
+                 (find-references/help body x)))]
+    [(stx (? symbol? y) _)
+     (if (eq? x y)
+         (list syn)
+         (list))]
+    [_ (list)]))
 
 ;; loc? span? -> boolean?
 ;; is the location contained within the span?
