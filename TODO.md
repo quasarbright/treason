@@ -8,7 +8,7 @@
 - [ ] explicitly define terminology like line, column, position, index, etc.
 - [ ] cancellation? optional
 - [ ] parse the file on update and store ast, don't want to parse on every operation
-  - [ ] define a `find-enclosing-sexpr: loc? -> (or #f stx?)` which finds the enclosing sexpr. goto-definition and goto-references can just do a eq? check to compare identifiers with the given sexpr instead of checking for location. you could also cache parent references to make this even easier.
+  - [ ] define a `find-enclosing-sexpr: loc? -> (or #f stx?)` which finds the enclosing sexpr. goto-definition and goto-references can just do a eq? check to compare identifiers with the given sexpr instead of checking for location. you could also cache parent references to make this even easier. NOTE this might not be possible with macros since they duplicate template spans
 - [ ] report diagnostics
 - [x] stx patterns or stx matching
 - [x] no parent, immutable, simplify tests. macro expansion will make parent weird
