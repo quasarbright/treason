@@ -9,8 +9,8 @@
 - [ ] cancellation? optional
 - [ ] parse the file on update and store ast, don't want to parse on every operation
   - [ ] define a `find-enclosing-sexpr: loc? -> (or #f stx?)` which finds the enclosing sexpr. goto-definition and goto-references can just do a eq? check to compare identifiers with the given sexpr instead of checking for location. you could also cache parent references to make this even easier.
-- [ ] stx patterns or stx matching
 - [ ] report diagnostics
+- [x] stx patterns or stx matching
 - [x] no parent, immutable, simplify tests. macro expansion will make parent weird
 - [x] decouple server logic from read/write over wire
 - [x] go to definition

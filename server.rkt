@@ -8,6 +8,7 @@
 (module+ test (require rackunit))
 (require json
          "stx.rkt"
+         "stx-quote.rkt"
          "reader.rkt"
          "constants.rkt"
          "server-logging.rkt")
@@ -178,7 +179,7 @@ do we want actual types instead of json?
 ;; stx? -> (listof (hash 'name string? 'kind SymbolKind 'location Location))
 (define (get-document-symbols syn)
   (match syn
-    [(stx (list (stx 'let _) (stx (list (stx (list (stx x x-span) rhs) _)) _) body) _)
+    [(stx-quote (let ([,(stx x x-span) ,rhs]) ,body))
      (cons (hash 'name (symbol->string x)
                  'kind SymbolKind/Variable
                  'location (span->location x-span))
@@ -193,7 +194,7 @@ do we want actual types instead of json?
              ; maps binding symbol to binding identifier
              [bindings (hash)])
     (match syn
-      [(stx (list (stx 'let _) (stx (list (stx (list (and x-syn (stx x x-span)) rhs) _)) _) body) _)
+      [(stx-quote (let ([,(and x-syn (stx x x-span)) ,rhs]) ,body))
        (cond
          ;; goto-definition on the binding site returns itself
          [(loc-in-span? lc x-span)
@@ -242,13 +243,12 @@ do we want actual types instead of json?
 (define (find-references syn lc)
   (let loop ([syn syn])
     (match syn
-      [(stx (list (stx 'let _) (stx (list (stx (list (stx x x-span) rhs) _)) _) body) _)
-       (if
-        (loc-in-span? lc x-span)
-        ;; found the binder, now collect references in body
-        (find-references/help body x)
-        (or (loop rhs)
-            (loop body)))]
+      [(stx-quote (let ([,(stx x x-span) ,rhs]) ,body))
+       (if (loc-in-span? lc x-span)
+           ;; found the binder, now collect references in body
+           (find-references/help body x)
+           (or (loop rhs)
+               (loop body)))]
       [_ #f])))
 
 (module+ test
@@ -269,7 +269,7 @@ do we want actual types instead of json?
 ;; find references of x in syn
 (define (find-references/help syn x)
   (match syn
-    [(stx (list (stx 'let _) (stx (list (stx (list (stx y _) rhs) _)) _) body) _)
+    [(stx-quote (let ([,(stx y _) ,rhs]) ,body))
      (append (find-references/help rhs x)
              (if (eq? x y)
                  ;; shadowed, no more references
