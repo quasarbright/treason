@@ -29,51 +29,22 @@
 ;; (stx? -> stx?)
 ;; which represents a stx transformer from a let-syntax-rule macro definition
 
-(module+ test
-  (require rackunit)
-  (check-equal? (stx->datum (expand (stx-quote 1))) 1)
-  (check-equal? (stx->datum (expand (stx-quote (let ([x 1]) x))))
-                '(let ([x 1]) x))
-  (check-equal? (stx->datum (expand (stx-quote (if #t 1 2))))
-                '(if #t 1 2))
-  (check-equal? (stx->datum (expand (stx-quote (let-syntax-rule ([(m) 2]) (m)))))
-                2)
-  (check-equal? (stx->datum (expand (stx-quote (let-syntax-rule ([(id x) x]) (id 2)))))
-                2)
-  (check-equal? (stx->datum (expand (stx-quote (let-syntax-rule ([(snd x y) y]) (snd 1 2)))))
-                2)
-  (check-equal? (stx->datum (expand (stx-quote (let-syntax-rule ([(or a b) (let ([tmp a]) (if tmp tmp b))]) (or 1 2)))))
-                '(let ([tmp 1]) (if tmp tmp 2)))
-  (check-equal? (stx->datum (expand (stx-quote (let-syntax-rule ([(or a b) (let ([tmp a]) (if tmp tmp b))])
-                                                 (let-syntax-rule ([(not x) (if x #f #t)])
-                                                   (let-syntax-rule ([(nor a b) (not (or a b))])
-                                                     (nor 1 2)))))))
-                '(if (let ([tmp 1]) (if tmp tmp 2))
-                     #f
-                     #t)))
-;; TODO test source locations after expansion
-
 ;; stx? [(hash symbol? (or/c #f (stx? -> stx?)))] -> stx?
 ;; env maps symbols to transformers or #f (for normal var)
 (define (expand syn [env (hash)])
   (match syn
-    [(stx-quote (,(and let-stx (stx-quote let)) ,(and binding (stx-quote ([,x ,rhs]))) ,body))
+    [(stx-quote (let ([,x ,rhs]) ,body))
      (define x-sym (stx->datum x))
      (unless (symbol? x-sym)
        (error 'expand "let binding must be a symbol, got ~a" x-sym))
-     (define expanded-rhs (expand rhs env))
-     (define expanded-body (expand body (hash-set env x-sym #f)))
-     (stx (list (stx 'let (stx-span let-stx))
-                (stx (list (stx (list x expanded-rhs) (stx-span binding))) ; technically should be inner parens but whatever
-                     (stx-span binding))
-                expanded-body)
-          (stx-span syn))]
-    [(stx-quote (,(and if-stx (stx-quote if)) ,cnd ,thn ,els))
-     (stx (list (stx 'if (stx-span if-stx))
-                (expand cnd env)
-                (expand thn env)
-                (expand els env))
-          (stx-span syn))]
+     (define rhs^ (expand rhs env))
+     (define body^ (expand body (hash-set env x-sym #f)))
+     (stx-rebuild syn (let ([,x ,rhs^]) ,body^))]
+    [(stx-quote (if ,cnd ,thn ,els))
+     (define cnd^ (expand cnd env))
+     (define thn^ (expand thn env))
+     (define els^ (expand els env))
+     (stx-rebuild syn (if ,cnd^ ,thn^ ,els^))]
     [(stx-quote (let-syntax-rule ([,pattern ,template]) ,body))
      (unless (match (stx-e pattern) [(list _ ...) #t] [_ #f])
        (error 'expand "invalid macro pattern: pattern must be a list"))
@@ -102,6 +73,30 @@
        (when transformer
          (error x-sym "bad syntax")))
      datum-syn]))
+
+(module+ test
+  (require rackunit)
+  (check-equal? (stx->datum (expand (stx-quote 1))) 1)
+  (check-equal? (stx->datum (expand (stx-quote (let ([x 1]) x))))
+                '(let ([x 1]) x))
+  (check-equal? (stx->datum (expand (stx-quote (if #t 1 2))))
+                '(if #t 1 2))
+  (check-equal? (stx->datum (expand (stx-quote (let-syntax-rule ([(m) 2]) (m)))))
+                2)
+  (check-equal? (stx->datum (expand (stx-quote (let-syntax-rule ([(id x) x]) (id 2)))))
+                2)
+  (check-equal? (stx->datum (expand (stx-quote (let-syntax-rule ([(snd x y) y]) (snd 1 2)))))
+                2)
+  (check-equal? (stx->datum (expand (stx-quote (let-syntax-rule ([(or a b) (let ([tmp a]) (if tmp tmp b))]) (or 1 2)))))
+                '(let ([tmp 1]) (if tmp tmp 2)))
+  (check-equal? (stx->datum (expand (stx-quote (let-syntax-rule ([(or a b) (let ([tmp a]) (if tmp tmp b))])
+                                                 (let-syntax-rule ([(not x) (if x #f #t)])
+                                                   (let-syntax-rule ([(nor a b) (not (or a b))])
+                                                     (nor 1 2)))))))
+                '(if (let ([tmp 1]) (if tmp tmp 2))
+                     #f
+                     #t)))
+;; TODO test source locations after expansion
 
 ;; stx? stx? -> (stx? -> stx?)
 (define ((make-transformer pattern template) syn)

@@ -4,46 +4,6 @@
 
 (require racket/hash)
 
-
-(module+ test
-  (require rackunit)
-  (check-equal? (expand 1) 1)
-  (check-equal? (expand '(let ([x 1]) x))
-                '(let ([x 1]) x))
-  (check-equal? (expand '(if #t 1 2))
-                '(if #t 1 2))
-  (check-equal? (expand '(let-syntax-rule ([(m) 2]) (m)))
-                2)
-  (check-equal? (expand '(let-syntax-rule ([(id x) x]) (id 2)))
-                2)
-  (check-equal? (expand '(let-syntax-rule ([(snd x y) y]) (snd 1 2)))
-                2)
-  (check-equal? (expand '(let-syntax-rule ([(or a b) (let ([tmp a]) (if tmp tmp b))]) (or 1 2)))
-                '(let ([tmp 1]) (if tmp tmp 2)))
-  (check-equal? (expand '(let-syntax-rule ([(or a b) (let ([tmp a]) (if tmp tmp b))])
-                           (let-syntax-rule ([(not x) (if x #f #t)])
-                             (let-syntax-rule ([(nor a b) (not (or a b))])
-                               (nor 1 2)))))
-                '(if (let ([tmp 1]) (if tmp tmp 2))
-                     #f
-                     #t)))
-
-;; actually don't need evaluator at all for expansion since we're using pattern-based macros
-#;
-(define (evaluate expr [env (hash)])
-  (match expr
-    [`(let ([,(? symbol? x) ,rhs]) ,body)
-     (evaluate body (hash-set env x (evaluate rhs env)))]
-    [`(if ,cnd ,thn ,els)
-     (if (evaluate cnd env)
-         (evaluate thn env)
-         (evaluate els env))]
-    [`(let-syntax-rule . ,_)
-     ;; should be expanded away
-     (error 'evaluate "cannot evaluate let-syntax-rule")]
-    [(? symbol? x) (hash-ref env x (lambda () (error 'evaluate "unbound var: ~a" x)))]
-    [datum datum]))
-
 ;; expr [(hash symbol (or #f (expr -> expr)))] -> expr
 ;; env maps symbols to transformers or #f (for normal var)
 (define (expand expr [env (hash)])
@@ -70,6 +30,29 @@
        (error x "bad syntax"))
      x]
     [datum datum]))
+
+(module+ test
+  (require rackunit)
+  (check-equal? (expand 1) 1)
+  (check-equal? (expand '(let ([x 1]) x))
+                '(let ([x 1]) x))
+  (check-equal? (expand '(if #t 1 2))
+                '(if #t 1 2))
+  (check-equal? (expand '(let-syntax-rule ([(m) 2]) (m)))
+                2)
+  (check-equal? (expand '(let-syntax-rule ([(id x) x]) (id 2)))
+                2)
+  (check-equal? (expand '(let-syntax-rule ([(snd x y) y]) (snd 1 2)))
+                2)
+  (check-equal? (expand '(let-syntax-rule ([(or a b) (let ([tmp a]) (if tmp tmp b))]) (or 1 2)))
+                '(let ([tmp 1]) (if tmp tmp 2)))
+  (check-equal? (expand '(let-syntax-rule ([(or a b) (let ([tmp a]) (if tmp tmp b))])
+                           (let-syntax-rule ([(not x) (if x #f #t)])
+                             (let-syntax-rule ([(nor a b) (not (or a b))])
+                               (nor 1 2)))))
+                '(if (let ([tmp 1]) (if tmp tmp 2))
+                     #f
+                     #t)))
 
 ;; expr expr -> (expr -> expr)
 (define ((make-transformer pattern template) expr)
