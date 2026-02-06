@@ -92,7 +92,7 @@
          [(symbol? pattern) (hash pattern expr)]
          [else
           ;; atomic
-          (unless (eq? pattern expr)
+          (unless (equal? pattern expr)
             (error m "bad syntax"))
           (hash)]))]))
 

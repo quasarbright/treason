@@ -6,6 +6,7 @@ tiny lispy language with a language server
 
 ```
 expr := atom
+      | var
       | (let ([var expr]) expr)
       | (if expr expr expr)
       | (let-syntax-rule ([(var expr ...) expr]) expr)

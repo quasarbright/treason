@@ -12,6 +12,12 @@
 ;; we could get around this by setting the span to #f from the transformer (but only on the outermost)
 ;; in the usual case and using or in the expander on the span
 
+#|
+(add/macro #t #f)
+~>
+(add/proc #t #f) ; runtime error. should point to use-site, not template. this can be done with runtime contracts in macro definitions
+|#
+
 (provide (all-defined-out))
 (require "stx.rkt"
          "stx-quote.rkt"

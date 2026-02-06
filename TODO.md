@@ -1,3 +1,9 @@
+- [ ] integrate expander into server
+  - [ ] add new core forms
+  - [ ] continue after error. see [notes](./notes.md#error-recovery)
+  - [ ] error -> diagnostic
+- [ ] abstraction for stx replacements. `(stx-rebuild syn (let ([,x^ ,rhs^]) ,body^))`
+  - go element by element. for equal datum/structure vs origin, copy origin span. for unquoted forms, just directly inject without editing span.
 - [ ] handle eof
 - [ ] graceful error handling
 - [ ] properly link the server executable so the command in the extension can just be treason-language-server and not a hard-coded path
@@ -10,6 +16,7 @@
 - [ ] parse the file on update and store ast, don't want to parse on every operation
   - [ ] define a `find-enclosing-sexpr: loc? -> (or #f stx?)` which finds the enclosing sexpr. goto-definition and goto-references can just do a eq? check to compare identifiers with the given sexpr instead of checking for location. you could also cache parent references to make this even easier. NOTE this might not be possible with macros since they duplicate template spans
 - [ ] report diagnostics
+- [ ] incremental reactive thing. see [notes](./notes.md#incremental-reactive)
 - [x] stx patterns or stx matching
 - [x] no parent, immutable, simplify tests. macro expansion will make parent weird
 - [x] decouple server logic from read/write over wire
