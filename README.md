@@ -7,4 +7,9 @@ tiny lispy language with a language server
 ```
 expr := atom
       | (let ([var expr]) expr)
+      | (if expr expr expr)
+      | (let-syntax-rule ([(var expr ...) expr]) expr)
+      | (var expr ...)
 ```
+
+only macro applications for now

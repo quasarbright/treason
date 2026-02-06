@@ -231,7 +231,11 @@ do we want actual types instead of json?
     ;; shadowing binding site
     (check-equal? (goto-definition (string->stx "test.tsn" "(let ([x 2]) (let ([x 3]) x))")
                                    (loc "test.tsn" 0 20))
-                  (stx 'x (span (loc "test.tsn" 0 20) (loc "test.tsn" 0 21))))))
+                  (stx 'x (span (loc "test.tsn" 0 20) (loc "test.tsn" 0 21))))
+    ;; malformed rhs shouldn't get in the way
+    (check-equal? (goto-definition (string->stx "test.tsn" "(let ([x (let)]) x)")
+                                   (loc "test.tsn" 0 17))
+                  (stx 'x (span (loc "test.tsn" 0 7) (loc "test.tsn" 0 8))))))
 
 ;; stx? loc? -> (or #f (listof stx?))
 ;; #f when it can't even find the binder
