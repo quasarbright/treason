@@ -2,6 +2,18 @@
   - [x] add new core forms
   - [x] continue after error. see [notes](./notes.md#error-recovery)
   - [ ] error -> diagnostic
+- [ ] check if client supports things before you call them, via client capabilities sent in init
+- [ ] more services
+  - [ ] unused var
+  - [ ] autocomplete
+  - [ ] rename symbol
+  - [ ] syntax highlighting
+  - [ ] macro/variable info on hover. like maybe the pattern?
+  - [ ] definition vs use-site indicator?
+  - [ ] macro vs variable indicator?
+  - [ ] see expanded form of highlighted selection
+  - [ ] disappeared use indication?
+  - [ ] tokenizer so `foo-bar` is one "word"
 - [ ] bug: goto definition and usages on macros won't work because neither are present in expanded code! need to record this stuff during expansion or something. see [notes](./notes.md#goto-definition-and-references-with-macros)
 - [ ] figure out definition and use-site during expander pass? or at least record info to do that. might be best done after the ambient db stuff with hashes from node id to info.
 - [ ] handle bad syntax in lsp operations

@@ -33,3 +33,8 @@
 (define TextDocumentSyncKind/None 0)
 (define TextDocumentSyncKind/Full 1)
 (define TextDocumentSyncKind/Incremental 2)
+
+(define DiagnosticSeverity/Error 1)
+(define DiagnosticSeverity/Warning 2)
+(define DiagnosticSeverity/Information 3)
+(define DiagnosticSeverity/Hint 4)

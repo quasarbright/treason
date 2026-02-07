@@ -225,3 +225,11 @@
 (define-syntax-rule (with-stx-error-handling body ...)
   (with-handlers ([stx-error? (lambda (err) err)])
     body ...))
+
+;; ExpanderResult -> (listof stx-error?)
+(define (find-stx-errors syn)
+  (match syn
+    [(? stx-error? err) (list err)]
+    [(stx (? list? syns) _)
+     (append-map find-stx-errors syns)]
+    [_ (list)]))

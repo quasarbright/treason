@@ -56,7 +56,8 @@ do we want actual types instead of json?
 |#
 
 (define (main [in (current-input-port)] [out (current-output-port)])
-  (define srv (new server%))
+  (define client (new proxy-client% [in in] [out out]))
+  (define srv (new server% [client client]))
   (log-server-info "started server")
   (let loop ()
     (match (read-message in)
@@ -74,14 +75,31 @@ do we want actual types instead of json?
            (dynamic-send srv method parameters)))])
     (loop)))
 
+(define proxy-client%
+  (class object%
+    (super-new)
+    (init-field [in (current-input-port)]
+                [out (current-output-port)])
+
+    (define next-id 0)
+    
+    (define-syntax-rule (define-remote/notification method-name)
+      (define/public (method-name params)
+        (write-message (notification 'method-name params) out)))
+    
+    (define-remote/notification textDocument/publishDiagnostics)))
+
 (define server%
   (class object%
     (super-new)
 
     ;; maps uris to text documents
-    (field [text-documents (make-hash)])
+    (define text-documents (make-hash))
+
+    (init-field client)
 
     (define/public (initialize parameters)
+      ;; TODO record client capabilities
       (hasheq 'capabilities
               (hasheq 'textDocumentSync (hasheq 'openClose #t
                                                 'change TextDocumentSyncKind/Full)
@@ -122,8 +140,22 @@ do we want actual types instead of json?
     (define/public (textDocument/didOpen parameters)
       (define text-document (hash-ref parameters 'textDocument))
       (define uri (hash-ref text-document 'uri))
-      (hash-set! text-documents uri text-document))
+      (hash-set! text-documents uri text-document)
+      (push-diagnostics uri))
     
+    (define/private (push-diagnostics uri)
+      (define text-document
+        (hash-ref text-documents
+                  uri
+                  (lambda () (error 'textDocument/didChange "unknown document: ~a" uri))))
+      (define stx (string->stx uri (hash-ref text-document 'text)))
+      (define stx^ (expand stx))
+      (define errors (find-stx-errors stx^))
+      (define diagnostics (map stx-error->diagnostic errors))
+      (send client textDocument/publishDiagnostics 
+            (hasheq 'uri uri
+                    'diagnostics diagnostics)))
+
     (define/public (textDocument/didChange parameters)
       (match parameters
         [(hash*
@@ -149,7 +181,8 @@ do we want actual types instead of json?
          (define new-text-document
            (hash-set (hash-set text-document 'text new-text)
                      'version version))
-         (hash-set! text-documents uri new-text-document)]))
+         (hash-set! text-documents uri new-text-document)
+         (push-diagnostics uri)]))
     
     (define/public (textDocument/didClose parameters)
       (match parameters
@@ -499,3 +532,27 @@ do we want actual types instead of json?
   (check-equal? (with-output-to-string
                   (lambda () (write-message (response 2 'null "😎"))))
                 "Content-Length: 39\r\n\r\n{\"error\":\"😎\",\"id\":2,\"jsonrpc\":\"2.0\"}"))
+
+;; stx-error? -> hasheq?
+(define (stx-error->diagnostic err)
+  (hasheq 'range (span->range ( stx-error-span err))
+          'severity DiagnosticSeverity/Error
+          'source "treason"
+          'message (stx-error-diagnostic-message err)))
+
+;; stx-error? -> string?
+(define (stx-error-diagnostic-message err)
+  (match err
+    [(stx-error #f message _ _)
+     message]
+    [(stx-error who message _ _)
+     (format "~a: ~a" who message)]))
+
+;; stx-error? -> span?
+;; where should the red squiggly go?
+(define (stx-error-span err)
+  (match err
+    [(stx-error _ _ expr #f)
+     (stx-span expr)]
+    [(stx-error _ _ _ sub-expr)
+     (stx-span sub-expr)]))
