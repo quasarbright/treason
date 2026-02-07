@@ -159,6 +159,8 @@
   ;; Test compute-end-position helper
   (let ([text "hello\nworld"])
     ;; substring from 0 to 4 is "hell", so end is at column 4 on line 0
-    (check-equal? (compute-end-position text 0 0 0 4) (cons 0 4))
+    (let-values ([(line col) (compute-end-position text 0 0 0 4)])
+      (check-equal? (cons line col) (cons 0 4)))
     ;; substring from 0 to 10 is "hello\nworl", so end is at column 4 on line 1
-    (check-equal? (compute-end-position text 0 0 0 10) (cons 1 4))))
+    (let-values ([(line col) (compute-end-position text 0 0 0 10)])
+      (check-equal? (cons line col) (cons 1 4)))))
