@@ -1,7 +1,10 @@
 - [ ] integrate expander into server
-  - [ ] add new core forms
-  - [ ] continue after error. see [notes](./notes.md#error-recovery)
+  - [x] add new core forms
+  - [x] continue after error. see [notes](./notes.md#error-recovery)
   - [ ] error -> diagnostic
+- [ ] bug: goto definition and usages on macros won't work because neither are present in expanded code! need to record this stuff during expansion or something. see [notes](./notes.md#goto-definition-and-references-with-macros)
+- [ ] figure out definition and use-site during expander pass? or at least record info to do that. might be best done after the ambient db stuff with hashes from node id to info.
+- [ ] handle bad syntax in lsp operations
 - [ ] handle eof in json-rpc message reader
 - [ ] graceful error handling
 - [ ] properly link the server executable so the command in the extension can just be treason-language-server and not a hard-coded path

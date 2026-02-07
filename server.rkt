@@ -11,7 +11,8 @@
          "stx-quote.rkt"
          "reader.rkt"
          "constants.rkt"
-         "server-logging.rkt")
+         "server-logging.rkt"
+         "expander.rkt")
 
 ;; An Request is a
 (struct request [id method params] #:transparent)
@@ -93,7 +94,8 @@ do we want actual types instead of json?
         [(hash* ['textDocument (hash* ['uri uri])])
          (define text-document (hash-ref text-documents uri (lambda () (error 'textDocument/documentSymbol "unknown document ~a" uri))))
          (define stx (string->stx uri (hash-ref text-document 'text)))
-         (get-document-symbols stx)]))
+         (define stx^ (expand stx))
+         (get-document-symbols stx^)]))
     
     (define/public (textDocument/definition parameters)
       (match parameters
@@ -101,7 +103,8 @@ do we want actual types instead of json?
                 ['position pos])
          (define text-document (hash-ref text-documents uri (lambda () (error 'textDocument/documentSymbol "unknown document ~a" uri))))
          (define stx (string->stx uri (hash-ref text-document 'text)))
-         (define result (goto-definition stx (position->loc pos uri)))
+         (define stx^ (expand stx))
+         (define result (goto-definition stx^ (position->loc pos uri)))
          (if result
              (span->location (stx-span result))
              'null)]))
@@ -112,7 +115,8 @@ do we want actual types instead of json?
                 ['position pos])
          (define text-document (hash-ref text-documents uri (lambda () (error 'textDocument/documentSymbol "unknown document ~a" uri))))
          (define stx (string->stx uri (hash-ref text-document 'text)))
-         (for/list ([id (find-references stx (position->loc pos uri))])
+         (define stx^ (expand stx))
+         (for/list ([id (find-references stx^ (position->loc pos uri))])
            (span->location (stx-span id)))]))
     
     (define/public (textDocument/didOpen parameters)
@@ -184,6 +188,16 @@ do we want actual types instead of json?
                  'kind SymbolKind/Variable
                  'location (span->location x-span))
            (append-map get-document-symbols (list rhs body)))]
+    [(stx-quote (if ,cnd ,thn ,els))
+     (append (get-document-symbols cnd)
+             (get-document-symbols thn)
+             (get-document-symbols els))]
+    [(stx-quote (let-syntax-rule ([,_ ,_]) ,body))
+     ;; if we see this in expanded code, it means the pattern is malformed and defines nothing
+     (get-document-symbols body)]
+    [(stx (cons _ _) _)
+     ;; shouldn't see this in expanded code
+     (list)]
     [_ (list)]))
 
 ;; stx? loc? -> (or #f stx?)
@@ -202,7 +216,20 @@ do we want actual types instead of json?
          [else
           (define rhs-result (loop rhs bindings))
           (or rhs-result
+              ;; assume x is symbol
               (loop body (hash-set bindings x x-syn)))])]
+      [(stx-quote (if ,cnd ,thn ,els))
+       (or (loop cnd bindings)
+           (loop thn bindings)
+           (loop els bindings))]
+      [(stx-quote (let-syntax-rule ([,_ ,_]) ,body))
+       ;; shouldn't see this in an expanded program unless pattern expansion failed,
+       ;; which means this isn't a valid pattern and thus defines nothing
+       (loop body bindings)]
+      [(stx (cons _ _) _)
+       ;; application (macro invocation)
+       ;; shouldn't see this in expanded code ever, it'll just be a stx-error
+       #f]
       [(stx (? symbol? id) spn)
        (and (loc-in-span? lc spn)
             (hash-ref bindings id #f))]
@@ -236,7 +263,15 @@ do we want actual types instead of json?
     ;; malformed rhs shouldn't get in the way
     (check-equal? (goto-definition (string->stx "test.tsn" "(let ([x (let)]) x)")
                                    (loc "test.tsn" 0 17))
-                  (stx 'x (span (loc "test.tsn" 0 7) (loc "test.tsn" 0 8))))))
+                  (stx 'x (span (loc "test.tsn" 0 7) (loc "test.tsn" 0 8))))
+    ;; macro around let, maintain use-site spans
+    (check-equal? (goto-definition (expand (string->stx "test.tsn" "(let-syntax-rule ([(mylet ([x rhs]) body) (let ([x rhs]) body)]) (mylet ([x 1]) x))"))
+                                   (loc "test.tsn" 0 80))
+                  (stx 'x (span (loc "test.tsn" 0 74) (loc "test.tsn" 0 75))))
+    ;; (unhygienic) macro-introduced binding, definition is in template
+    (check-equal? (goto-definition (expand (string->stx "test.tsn" "(let-syntax-rule ([(let-x body) (let ([x 1]) body)]) (let-x x))"))
+                                   (loc "test.tsn" 0 60))
+                  (stx 'x (span (loc "test.tsn" 0 39) (loc "test.tsn" 0 40))))))
 
 ;; stx? loc? -> (or #f (listof stx?))
 ;; #f when it can't even find the binder
@@ -249,6 +284,18 @@ do we want actual types instead of json?
            (find-references/help body x)
            (or (loop rhs)
                (loop body)))]
+      [(stx-quote (if ,cnd ,thn ,els))
+       (or (loop cnd)
+           (loop thn)
+           (loop els))]
+      [(stx-quote (let-syntax-rule ([,_ ,_]) ,body))
+       ;; shouldn't see this in an expanded program unless pattern expansion failed,
+       ;; which means this isn't a valid pattern and thus defines nothing
+       (loop body)]
+      [(stx (cons _ _) _)
+       ;; application (macro invocation)
+       ;; shouldn't see this in expanded code ever, it'll just be a stx-error
+       #f]
       [_ #f])))
 
 (module+ test
@@ -263,7 +310,18 @@ do we want actual types instead of json?
   (check-equal? (find-references (string->stx "test.tsn" "(let ([x 2]) (let ([y x]) x))")
                                  (loc "test.tsn" 0 7))
                 (list (stx 'x (span (loc "test.tsn" 0 22) (loc "test.tsn" 0 23)))
-                      (stx 'x (span (loc "test.tsn" 0 26) (loc "test.tsn" 0 27))))))
+                      (stx 'x (span (loc "test.tsn" 0 26) (loc "test.tsn" 0 27)))))
+  ;; macro around let, maintain use-site spans
+  (check-equal? (find-references (expand (string->stx "test.tsn" "(let-syntax-rule ([(mylet ([x rhs]) body) (let ([x rhs]) body)]) (mylet ([x 1]) x))"))
+                                 (loc "test.tsn" 0 74))
+                (list (stx 'x (span (loc "test.tsn" 0 80) (loc "test.tsn" 0 81)))))
+  ;; (unhygienic) macro-introduced reference gets definition-site spans, which are the same for each macro use.
+  ;; strange, but this will go away with hygiene. also, vscode dedups
+  (check-equal? (find-references (expand (string->stx "test.tsn" "(let-syntax-rule ([(m) x]) (let ([x 1]) (let ([y (m)]) (m))))"))
+                                 (loc "test.tsn" 0 34))
+                ;; duplicated spans
+                (list (stx 'x (span (loc "test.tsn" 0 23) (loc "test.tsn" 0 24)))
+                      (stx 'x (span (loc "test.tsn" 0 23) (loc "test.tsn" 0 24))))))
 
 ;; stx? symbol? -> (listof stx?)
 ;; find references of x in syn
@@ -275,6 +333,18 @@ do we want actual types instead of json?
                  ;; shadowed, no more references
                  (list)
                  (find-references/help body x)))]
+    [(stx-quote (if ,cnd ,thn ,els))
+     (append (find-references/help cnd x)
+             (find-references/help thn x)
+             (find-references/help els x))]
+    [(stx-quote (let-syntax-rule ([,_ ,_]) ,body))
+     ;; don't consider references in template because you have no idea where they'll end up.
+     ;; shouldn't see this in an expanded program unless pattern expansion failed
+     (find-references/help body x)]
+    [(stx (cons _ _) _)
+     ;; application (macro invocation)
+     ;; shouldn't see this in expanded code ever, it'll just be a stx-error
+     (list)]
     [(stx (? symbol? y) _)
      (if (eq? x y)
          (list syn)

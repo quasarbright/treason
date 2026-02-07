@@ -66,3 +66,31 @@ some languages use paths for node ids, like
 ```
 
 but this might not play nice with expansion. maybe having an `expanded` segment in the path? need to think about this
+
+
+## goto definition and references with macros
+
+as of writing this, we run goto definition and references on expanded code, which means we can't use them on macro names since their definition and usage disappears during expansion.
+
+here are examples of desired behavior that is currently not supported
+
+```racket
+(define-syntax-rule (m x) x)
+(m)
+(m)
+```
+goto definition on either m should take you to its position in line 1
+
+find references on line 1 should take you to its position on lines 2 and 3
+
+in order to accomplish this, we must record information about macro definition and use sites during expansion and make this information available to the language server. we also don't want macro-introduced syntax to be falsely captured by these operations
+
+```racket
+(let-syntax-rule ([(bind-x body) (let ([x 1]) body)])
+  (let-syntax-rule ([(ref-x) x])
+    (bind-x (ref-x))))
+```
+
+we don't want goto definition on `(ref-x)` to bring us to the template of `bind-x` since that isn't on the surface. This might be the current behavior depending on how macro-introduced spans work.
+
+In general, we want to distinguish between surface and macro-introduced syntax, and have knowledge of the surface syntax before and after expansion. before for macros and after for variables that may be bound only in expanded code. I don't want to keep adding fields to `stx` so maybe we should do node ids and mappings from node ids to info, moving towards something like [incremental reactive](#incremental-reactive)

@@ -124,7 +124,7 @@
                      #f
                      #t))
 
-  ;;; stx errors
+  ;;; stx-errors
 
   ;; errors will be reported as coming from here so use test-case to know where a failure came from
   (define-syntax-rule (check-stx-error program expected-who expected-message-regexp expected-expr expected-sub-expr)
