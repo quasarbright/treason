@@ -72,11 +72,17 @@
        (check-equal? y-span (stx-span y))
        ; list template inherits from original
        (check-equal? rebuilt-span app-span)]
-      [(_ _) (fail "rebuilt syntax wrong shape")])))
+      [(_ _) (fail "rebuilt syntax wrong shape")]))
+  (test-case "make sure arbitrary structs can get injected"
+    (struct foo [])
+    (check-match (stx-rebuild (stx-quote (if 1 1 1)) (if ,(foo) ,(foo) ,(foo)))
+                 (stx-quote (if ,(foo) ,(foo) ,(foo))))))
 
 (define (stx-rebuild/proc syn e)
   (match* (syn e)
-    [(_ (? stx?)) e]
+    [(_ (? (lambda (e) (or (stx? e) (not (or (list? e) (stx-e? e)))))))
+     ;; either unquoted stx or something like a stx-error
+     e]
     [((stx (? list? syn-es) spn) _)
      (unless (and (list? e) (= (length syn-es) (length e)))
        (error 'stx-rebuild "source and template syntax have different shape"))

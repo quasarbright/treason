@@ -2,7 +2,7 @@
   - [ ] add new core forms
   - [ ] continue after error. see [notes](./notes.md#error-recovery)
   - [ ] error -> diagnostic
-- [ ] handle eof
+- [ ] handle eof in json-rpc message reader
 - [ ] graceful error handling
 - [ ] properly link the server executable so the command in the extension can just be treason-language-server and not a hard-coded path
 - [ ] decouple server logic from json, or at least make convenient wrappers
@@ -13,7 +13,7 @@
 - [ ] cancellation? optional
 - [ ] parse the file on update and store ast, don't want to parse on every operation
   - [ ] define a `find-enclosing-sexpr: loc? -> (or #f stx?)` which finds the enclosing sexpr. goto-definition and goto-references can just do a eq? check to compare identifiers with the given sexpr instead of checking for location. you could also cache parent references to make this even easier. NOTE this might not be possible with macros since they duplicate template spans
-- [ ] report diagnostics
+- [ ] do after syntax-spec support probably: let's say you're writing an if and so far you have `(if (...))` just the condition. you won't get IDE services bc the whole if fails to expand since the use-site doesn't match the pattern. for some macros, you actually should expand sub-expressions even if the use-site is malformed. can use grammar to inform whether to do this.
 - [ ] incremental reactive thing. see [notes](./notes.md#incremental-reactive)
 - [x] abstraction for stx replacements. `(stx-rebuild syn (let ([,x^ ,rhs^]) ,body^))`
   - go element by element. for equal datum/structure vs origin, copy origin span. for unquoted forms, just directly inject without editing span.

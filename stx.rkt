@@ -17,6 +17,7 @@
 ;; number
 ;; boolean
 ;; (Listof Stx)
+(define stx-e? (or/c symbol? number? boolean? (listof stx?)))
 
 ;; A Span is a
 (struct span [start end] #:transparent)
