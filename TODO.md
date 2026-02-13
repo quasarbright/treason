@@ -1,7 +1,8 @@
-- [ ] integrate expander into server
+- [x] integrate expander into server
   - [x] add new core forms
   - [x] continue after error. see [notes](./notes.md#error-recovery)
-  - [ ] error -> diagnostic
+  - [x] error -> diagnostic
+- [ ] bug: find all references should also work on reference site, not just definition site
 - [ ] check if client supports things before you call them, via client capabilities sent in init
 - [ ] more services
   - [ ] unused var
@@ -30,6 +31,7 @@
   - [ ] define a `find-enclosing-sexpr: loc? -> (or #f stx?)` which finds the enclosing sexpr. goto-definition and goto-references can just do a eq? check to compare identifiers with the given sexpr instead of checking for location. you could also cache parent references to make this even easier. NOTE this might not be possible with macros since they duplicate template spans
 - [ ] do after syntax-spec support probably: let's say you're writing an if and so far you have `(if (...))` just the condition. you won't get IDE services bc the whole if fails to expand since the use-site doesn't match the pattern. for some macros, you actually should expand sub-expressions even if the use-site is malformed. can use grammar to inform whether to do this.
 - [ ] incremental reactive thing. see [notes](./notes.md#incremental-reactive)
+- [ ] how the hell can you do autocomplete inside of a macro use? you don't have binding info until after expansion, right? if the use ends up erroring because you're still typing it, how would you possibly have information about bindings available inside of that? either way, the expanded syntax can completely change as you're typing, especially if it's a big compiler macro. maybe you'll have scopes up to but not from inside of the use site that you can use, and it'll be better than nothing.
 - [x] abstraction for stx replacements. `(stx-rebuild syn (let ([,x^ ,rhs^]) ,body^))`
   - go element by element. for equal datum/structure vs origin, copy origin span. for unquoted forms, just directly inject without editing span.
 - [x] stx patterns or stx matching
