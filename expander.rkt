@@ -40,41 +40,100 @@
 ;; For example: in (let ([123 4]) body),
 ;; the whole let would be the expr and the 123 would be sub-expr
 
-;; An ExpanderResult is a
-(define expander-result? (or/c stx? stx-error?))
+;; An Env is a
+;; (hash symbol? Binding)
+
+;; A Binding is a
+(struct binding [site value] #:transparent)
+;; where
+;; site is a stx?, the binding occurrence
+;; value is a (or #f (-> stx? stx?)), representing a value or transformer
+
+;; An expanded? is a
+(define expanded? (or/c stx? stx-error?))
 ;; could also be a stx? with stx-error? children
 
-;; stx? [(hash symbol? (or/c #f (stx? -> stx?)))] -> ExpanderResult
-;; env maps symbols to transformers or #f (for normal var)
-(define (expand syn [env (hash)])
+;; (mutable-hasheq stx? (listof binding?))
+;; map reference site to bindings.
+;; can have multiple if reference is expanded more than once.
+(define bindings (make-hasheq))
+;; (mutable-hasheq stx? (listof stx?))
+;; map binding site to list of reference sites
+(define references (make-hasheq))
+;; (mutable-hasheq stx? (listof Env))
+;; map stx? to the environments it was expanded under.
+;; since syntax can move around and get duplicated by macros,
+;; we may end up expanding it more than once.
+(define environments (make-hasheq))
+;; (mutable-hasheq stx? stx?)
+;; map the result of macro application to its origin use-site
+(define origins (make-hasheq))
+;; (mutable-hasheq stx? stx?)
+;; maps nodes to their surface syntax parents, sexpr-wise
+(define parents (make-hasheq))
+
+;; mutable-hash? any/c any/c -> void?
+(define (hash-cons! ht key v)
+  (hash-set! ht key (cons v (hash-ref ht key (list)))))
+
+;; stx? -> (listof stx-error?)
+(define (analyze! syn)
+  (record-parents! syn)
+  (find-stx-errors (expand syn)))
+
+;; stx? -> void?
+(define (record-parents! syn)
+  (match syn
+    [(stx (? list? children) _)
+     (for ([child children])
+       (hash-set! parents child syn)
+       (record-parents! child))]
+    [(stx child _)
+     (hash-set! parents child syn)]))
+
+;; stx? [stx?] [env?] -> expanded?
+(define (expand syn [parent #f] [env (hasheq)])
+  (hash-set! environments syn (cons env (hash-ref environments syn (list))))
   (match syn
     [(stx-quote (let ([,x ,rhs]) ,body))
      (define x-sym (stx-e x))
      (cond
        [(symbol? x-sym)
-        (define rhs^ (expand rhs env))
-        (define body^ (expand body (hash-set env x-sym #f)))
+        (define rhs^ (expand rhs syn env))
+        (define bnd (binding x #f))
+        (hash-cons! bindings x bnd)
+        (hash-cons! references x x)
+        (define body^ (expand body syn (hash-set env x-sym bnd)))
         (stx-rebuild syn (let ([,x ,rhs^]) ,body^))]
        [else 
         (define err (stx-error 'let "expected a variable on the left-hand-side of binding pair" syn x))
-        (define rhs^ (expand rhs env))
+        (define rhs^ (expand rhs syn env))
         ;; body may get unbound x, but that's ok
-        (define body^ (expand body env))
+        (define body^ (expand body syn env))
         (stx-rebuild syn (let ([,err ,rhs^]) ,body^))])]
     [(stx-quote (if ,cnd ,thn ,els))
-     (define cnd^ (expand cnd env))
-     (define thn^ (expand thn env))
-     (define els^ (expand els env))
+     (define cnd^ (expand cnd syn env))
+     (define thn^ (expand thn syn env))
+     (define els^ (expand els syn env))
      (stx-rebuild syn (if ,cnd^ ,thn^ ,els^))]
     [(stx-quote (let-syntax-rule ([,pattern ,template]) ,body))
      (match (stx-e pattern)
-       [(cons (stx (? symbol? m-sym) _) _)
+       [(cons (and m (stx (? symbol? m-sym) _)) _)
         (define transformer (make-transformer m-sym pattern template))
-        (expand body (hash-set env m-sym transformer))]
+        (define bnd (binding m transformer))
+        (hash-cons! bindings m bnd)
+        (hash-cons! references m m)
+        ;; TODO not sure if this origin makes sense.
+        ;; let-syntax-rule is kind of like a macro that injects the body.
+        (hash-set! origins body syn)
+        (expand body parent (hash-set env m-sym bnd))]
        [_
         (define err (stx-error 'let-syntax-rule "pattern must be a list with an identifier head" syn pattern))
         ;; body may get unbound m, but that's ok
-        (define body^ (expand body env))
+        ;; TODO not sure if this origin makes sense.
+        ;; let-syntax-rule is kind of like a macro that injects the body.
+        (hash-set! origins body syn)
+        (define body^ (expand body syn env))
         (stx-rebuild syn (let-syntax-rule ([,err ,template]) ,body^))])]
     [(stx (or (and who (or 'let 'if 'let-syntax-rule))
               (cons (stx (and who (or 'let 'if 'let-syntax-rule)) _) _)) _)
@@ -85,18 +144,29 @@
        (define m-sym (stx-e m))
        (unless (symbol? m-sym)
          (raise (stx-error #f "application head must be an identifier" syn m)))
-       (define transformer (hash-ref env m-sym (lambda () (raise (stx-error m-sym "unbound var" syn m)))))
+       (define bnd (hash-ref env m-sym (lambda () (raise (stx-error m-sym "unbound var" syn m)))))
+       (hash-cons! bindings m bnd)
+       (define binder (binding-site bnd))
+       ;; this hash-ref is safe because the variable is bound, and we set the key during binding
+       (hash-cons! references binder m)
+       (define transformer (binding-value bnd))
        ;; no function calls, only macro calls
        (unless transformer
          (raise (stx-error m-sym "application head not a macro" syn m)))
        ;; note, stx-error from transformer is handled since we're in a with-stx-error-handling
        (define syn^ (transformer syn))
-       (expand syn^ env))]
+       (hash-set! origins syn^ syn)
+       (expand syn^ parent env))]
     [datum-syn
      (with-stx-error-handling
        (define x-sym (stx-e datum-syn))
        (when (symbol? x-sym)
-         (define transformer (hash-ref env x-sym (lambda () (raise (stx-error x-sym "unbound var" syn #f)))))
+         (define bnd (hash-ref env x-sym (lambda () (raise (stx-error x-sym "unbound var" syn #f)))))
+       (hash-cons! bindings datum-syn bnd)
+       (define binder (binding-site bnd))
+       ;; this hash-ref is safe because the variable is bound, and we set the key during binding
+       (hash-cons! references binder datum-syn)
+       (define transformer (binding-value bnd))
          (when transformer
            (raise (stx-error x-sym "bad syntax" syn #f))))
        datum-syn)]))
@@ -226,10 +296,116 @@
   (with-handlers ([stx-error? (lambda (err) err)])
     body ...))
 
-;; ExpanderResult -> (listof stx-error?)
+;; expanded? -> (listof stx-error?)
 (define (find-stx-errors syn)
   (match syn
     [(? stx-error? err) (list err)]
     [(stx (? list? syns) _)
      (append-map find-stx-errors syns)]
+    [_ (list)]))
+
+;; stx? -> (set symbol?)
+;; names in scope at the given syntax.
+;; these names should be safe to reference.
+(define (get-names-in-scope syn)
+  (define environments (get-environments syn))
+  (define name-sets
+    (for/list ([environment environments])
+      (for/seteq ([name (hash-keys environment)]) name)))
+  (apply set-intersect name-sets))
+
+(module+ test
+  ;; helper for creating stx with unique ids instead of spans
+  ;; exprs are numbered "left to right" with parents before their children
+  (define (tagged-stx datum)
+    (define count 0)
+    (define (next!)
+      (begin0 count
+              (set! count (add1 count))))
+    (let loop ([datum datum])
+      (match datum
+        [(? list? children)
+         (define tag (next!))
+         (stx (map loop children) tag)]
+        [atom
+         (stx atom (next!))])))
+  (define (find-stx-with-tag syn tag)
+    (let loop ([syn syn])
+      (match syn
+        [(stx _ (== tag)) syn]
+        [(stx (? list? children) _)
+         (for/or ([syn children])
+           (loop syn))]
+        [_ #f])))
+  (define (find-stx-with-datum syn datum)
+    (let loop ([syn syn])
+      (if (equal? (stx->datum syn) datum)
+          syn
+          (match (stx-e syn)
+            [(? list? children)
+             (for/or ([syn children])
+               (loop syn))]
+            [_ #f]))))
+  (let ([syn (tagged-stx '(let ([x 1]) 42))])
+    (analyze! syn)
+    (check-equal? (get-names-in-scope (find-stx-with-datum syn 42))
+                  (seteq 'x)))
+  (let ([syn (tagged-stx '(let ([x 1]) (let ([y 2]) 42)))])
+    (analyze! syn)
+    (check-equal? (get-names-in-scope (find-stx-with-datum syn 42))
+                  (seteq 'x 'y))
+    
+    (check-equal? (get-names-in-scope (find-stx-with-datum syn 'y))
+                  (seteq 'x)))
+  ;; (unhygienic) macro-introduced binding is in scope, macro is in scope
+  (let ([syn (tagged-stx '(let-syntax-rule ([(let-x body) (let ([x 1]) body)])
+                            (let-x 2)))])
+    (analyze! syn)
+    (check-equal? (get-names-in-scope (find-stx-with-datum syn 2))
+                  (seteq 'let-x 'x)))
+  ;; (hygienic) macro-introduced binding is in scope, macro is in scope
+  (let ([syn (tagged-stx '(let-syntax-rule ([(let2 x body) (let ([x 2]) body)])
+                            (let2 y 3)))])
+    (analyze! syn)
+    (check-equal? (get-names-in-scope (find-stx-with-datum syn 3))
+                  (seteq 'let2 'y)))
+  ;; surface syntax gets expanded twice under different environments, unhygienically
+  ;; available bindings are intersected
+  (let ([syn (tagged-stx '(let-syntax-rule ([(m body) (if 1 
+                                                          (let ([x 2]) (let ([y 2]) body))
+                                                          (let ([y 2]) (let ([z 2]) body)))])
+                            (m 3)))])
+    (analyze! syn)
+    (check-equal? (get-names-in-scope (find-stx-with-datum syn 3))
+                  (seteq 'm 'y))))
+
+;; stx? -> (listof Env)
+;; gets environments that the expression was expanded under.
+;; if none are found, tries (surface) ascendants
+(define (get-environments syn)
+  (cond
+    [(hash-has-key? environments syn) (hash-ref environments syn)]
+    [(hash-has-key? parents syn) (get-environments (hash-ref parents syn))]
+    [else (list)]))
+
+;; stx? -> (listof stx?)
+(define (get-binding-sites-of syn)
+  (define bnds (hash-ref bindings syn (list)))
+  (for/list ([bnd bnds])
+    (binding-site bnd)))
+
+;; stx? -> (listof stx?)
+(define (get-reference-sites-of syn)
+  (append-map (lambda (binding-site) (hash-ref references binding-site (list)))
+              (get-binding-sites-of syn)))
+
+;; get all defined symbols from the surface syntax
+(define (get-all-surface-binding-sites-in syn)
+  (match (stx-e syn)
+    [(? list? children)
+     (append-map get-all-surface-binding-sites-in children)]
+    [(? symbol?)
+     (if (hash-has-key? references syn)
+         (list syn)
+         (list))]
     [_ (list)]))

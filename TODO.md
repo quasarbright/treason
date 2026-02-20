@@ -32,6 +32,10 @@
 - [ ] do after syntax-spec support probably: let's say you're writing an if and so far you have `(if (...))` just the condition. you won't get IDE services bc the whole if fails to expand since the use-site doesn't match the pattern. for some macros, you actually should expand sub-expressions even if the use-site is malformed. can use grammar to inform whether to do this.
 - [ ] incremental reactive thing. see [notes](./notes.md#incremental-reactive)
 - [ ] how the hell can you do autocomplete inside of a macro use? you don't have binding info until after expansion, right? if the use ends up erroring because you're still typing it, how would you possibly have information about bindings available inside of that? either way, the expanded syntax can completely change as you're typing, especially if it's a big compiler macro. maybe you'll have scopes up to but not from inside of the use site that you can use, and it'll be better than nothing.
+- [ ] make sure syntax error nodes don't affect transformers. should be fine in pattern-based, but may cause problems in procedural.
+- [ ] pattern-bound variable references in template should count as references/definitions
+- [ ] goto definition can have multiple answers if the reference ends up being duplicated and resolves multiple separate times
+- [ ] think about format-identifier like auto-generated struct field accessors
 - [x] abstraction for stx replacements. `(stx-rebuild syn (let ([,x^ ,rhs^]) ,body^))`
   - go element by element. for equal datum/structure vs origin, copy origin span. for unquoted forms, just directly inject without editing span.
 - [x] stx patterns or stx matching

@@ -95,6 +95,8 @@ do we want actual types instead of json?
 
     ;; maps uris to text documents
     (define text-documents (make-hash))
+    ;; maps uris to surface syntaxes
+    (define syntaxes (make-hash))
 
     (init-field client)
 
@@ -110,47 +112,48 @@ do we want actual types instead of json?
     (define/public (textDocument/documentSymbol parameters)
       (match parameters
         [(hash* ['textDocument (hash* ['uri uri])])
-         (define text-document (hash-ref text-documents uri (lambda () (error 'textDocument/documentSymbol "unknown document ~a" uri))))
-         (define stx (string->stx uri (hash-ref text-document 'text)))
-         (define stx^ (expand stx))
-         (get-document-symbols stx^)]))
+         (define syn (hash-ref syntaxes uri (lambda () (error 'textDocument/documentSymbol "unknown document ~a" uri))))
+         (for/list ([x (get-all-surface-binding-sites-in syn)])
+           (hash 'name (symbol->string (stx-e x))
+                 'kind SymbolKind/Variable
+                 'location (span->location (stx-span x))))]))
     
     (define/public (textDocument/definition parameters)
       (match parameters
         [(hash* ['textDocument (hash* ['uri uri])]
                 ['position pos])
-         (define text-document (hash-ref text-documents uri (lambda () (error 'textDocument/documentSymbol "unknown document ~a" uri))))
-         (define stx (string->stx uri (hash-ref text-document 'text)))
-         (define stx^ (expand stx))
-         (define result (goto-definition stx^ (position->loc pos uri)))
-         (if result
-             (span->location (stx-span result))
-             'null)]))
+         (define syn (hash-ref syntaxes uri (lambda () (error 'textDocument/documentSymbol "unknown document ~a" uri))))
+         (define lc (position->loc pos uri))
+         (define reference-site (find-stx-at syn lc))
+         (define binding-sites (get-binding-sites-of reference-site))
+         (for/list ([binding-site binding-sites])
+           (span->location (stx-span binding-site)))]))
     
     (define/public (textDocument/references parameters)
       (match parameters
         [(hash* ['textDocument (hash* ['uri uri])]
                 ['position pos])
-         (define text-document (hash-ref text-documents uri (lambda () (error 'textDocument/documentSymbol "unknown document ~a" uri))))
-         (define stx (string->stx uri (hash-ref text-document 'text)))
-         (define stx^ (expand stx))
-         (for/list ([id (find-references stx^ (position->loc pos uri))])
-           (span->location (stx-span id)))]))
-    
+         (define syn (hash-ref syntaxes uri (lambda () (error 'textDocument/documentSymbol "unknown document ~a" uri))))
+         (define lc (position->loc pos uri))
+         (define reference-site (find-stx-at syn lc))
+         (define reference-sites (get-reference-sites-of reference-site))
+         (for/list ([reference-site reference-sites])
+           (span->location (stx-span reference-site)))]))
+
     (define/public (textDocument/didOpen parameters)
       (define text-document (hash-ref parameters 'textDocument))
       (define uri (hash-ref text-document 'uri))
       (hash-set! text-documents uri text-document)
+      (define syn (string->stx uri (hash-ref text-document 'text)))
+      (hash-set! syntaxes uri syn)
       (push-diagnostics uri))
     
     (define/private (push-diagnostics uri)
-      (define text-document
-        (hash-ref text-documents
+      (define syn
+        (hash-ref syntaxes
                   uri
                   (lambda () (error 'textDocument/didChange "unknown document: ~a" uri))))
-      (define stx (string->stx uri (hash-ref text-document 'text)))
-      (define stx^ (expand stx))
-      (define errors (find-stx-errors stx^))
+      (define errors (analyze! syn))
       (define diagnostics (map stx-error->diagnostic errors))
       (send client textDocument/publishDiagnostics 
             (hasheq 'uri uri
@@ -182,6 +185,9 @@ do we want actual types instead of json?
            (hash-set (hash-set text-document 'text new-text)
                      'version version))
          (hash-set! text-documents uri new-text-document)
+         (define syn (string->stx uri (hash-ref new-text-document 'text)))
+         (hash-set! syntaxes uri syn)
+         (analyze! syn)
          (push-diagnostics uri)]))
     
     (define/public (textDocument/didClose parameters)
@@ -213,61 +219,7 @@ do we want actual types instead of json?
   (check-equal? (position->index "hello\nworld" 1 5) 11)
   (check-equal? (position->index "line1\nline2\nline3" 2 3) 15))
 
-;; stx? -> (listof (hash 'name string? 'kind SymbolKind 'location Location))
-(define (get-document-symbols syn)
-  (match syn
-    [(stx-quote (let ([,(stx x x-span) ,rhs]) ,body))
-     (cons (hash 'name (symbol->string x)
-                 'kind SymbolKind/Variable
-                 'location (span->location x-span))
-           (append-map get-document-symbols (list rhs body)))]
-    [(stx-quote (if ,cnd ,thn ,els))
-     (append (get-document-symbols cnd)
-             (get-document-symbols thn)
-             (get-document-symbols els))]
-    [(stx-quote (let-syntax-rule ([,_ ,_]) ,body))
-     ;; if we see this in expanded code, it means the pattern is malformed and defines nothing
-     (get-document-symbols body)]
-    [(stx (cons _ _) _)
-     ;; shouldn't see this in expanded code
-     (list)]
-    [_ (list)]))
-
-;; stx? loc? -> (or #f stx?)
-;; takes in program and a location of a reference
-;; returns binding identifier or #f if there is none
-(define (goto-definition syn lc)
-  (let loop ([syn syn]
-             ; maps binding symbol to binding identifier
-             [bindings (hash)])
-    (match syn
-      [(stx-quote (let ([,(and x-syn (stx x x-span)) ,rhs]) ,body))
-       (cond
-         ;; goto-definition on the binding site returns itself
-         [(loc-in-span? lc x-span)
-          x-syn]
-         [else
-          (define rhs-result (loop rhs bindings))
-          (or rhs-result
-              ;; assume x is symbol
-              (loop body (hash-set bindings x x-syn)))])]
-      [(stx-quote (if ,cnd ,thn ,els))
-       (or (loop cnd bindings)
-           (loop thn bindings)
-           (loop els bindings))]
-      [(stx-quote (let-syntax-rule ([,_ ,_]) ,body))
-       ;; shouldn't see this in an expanded program unless pattern expansion failed,
-       ;; which means this isn't a valid pattern and thus defines nothing
-       (loop body bindings)]
-      [(stx (cons _ _) _)
-       ;; application (macro invocation)
-       ;; shouldn't see this in expanded code ever, it'll just be a stx-error
-       #f]
-      [(stx (? symbol? id) spn)
-       (and (loc-in-span? lc spn)
-            (hash-ref bindings id #f))]
-      [_ #f])))
-
+#;
 (module+ test
   (let ([syn (string->stx "test.tsn" "(let ([x 2]) x)")])
     (check-equal? (goto-definition syn (loc "test.tsn" 0 13))
@@ -306,31 +258,7 @@ do we want actual types instead of json?
                                    (loc "test.tsn" 0 60))
                   (stx 'x (span (loc "test.tsn" 0 39) (loc "test.tsn" 0 40))))))
 
-;; stx? loc? -> (or #f (listof stx?))
-;; #f when it can't even find the binder
-(define (find-references syn lc)
-  (let loop ([syn syn])
-    (match syn
-      [(stx-quote (let ([,(stx x x-span) ,rhs]) ,body))
-       (if (loc-in-span? lc x-span)
-           ;; found the binder, now collect references in body
-           (find-references/help body x)
-           (or (loop rhs)
-               (loop body)))]
-      [(stx-quote (if ,cnd ,thn ,els))
-       (or (loop cnd)
-           (loop thn)
-           (loop els))]
-      [(stx-quote (let-syntax-rule ([,_ ,_]) ,body))
-       ;; shouldn't see this in an expanded program unless pattern expansion failed,
-       ;; which means this isn't a valid pattern and thus defines nothing
-       (loop body)]
-      [(stx (cons _ _) _)
-       ;; application (macro invocation)
-       ;; shouldn't see this in expanded code ever, it'll just be a stx-error
-       #f]
-      [_ #f])))
-
+#;
 (module+ test
   (check-equal? (find-references (string->stx "test.tsn" "(let ([x 2]) x)")
                                  (loc "test.tsn" 0 7))
@@ -356,33 +284,21 @@ do we want actual types instead of json?
                 (list (stx 'x (span (loc "test.tsn" 0 23) (loc "test.tsn" 0 24)))
                       (stx 'x (span (loc "test.tsn" 0 23) (loc "test.tsn" 0 24))))))
 
-;; stx? symbol? -> (listof stx?)
-;; find references of x in syn
-(define (find-references/help syn x)
-  (match syn
-    [(stx-quote (let ([,(stx y _) ,rhs]) ,body))
-     (append (find-references/help rhs x)
-             (if (eq? x y)
-                 ;; shadowed, no more references
-                 (list)
-                 (find-references/help body x)))]
-    [(stx-quote (if ,cnd ,thn ,els))
-     (append (find-references/help cnd x)
-             (find-references/help thn x)
-             (find-references/help els x))]
-    [(stx-quote (let-syntax-rule ([,_ ,_]) ,body))
-     ;; don't consider references in template because you have no idea where they'll end up.
-     ;; shouldn't see this in an expanded program unless pattern expansion failed
-     (find-references/help body x)]
-    [(stx (cons _ _) _)
-     ;; application (macro invocation)
-     ;; shouldn't see this in expanded code ever, it'll just be a stx-error
-     (list)]
-    [(stx (? symbol? y) _)
-     (if (eq? x y)
-         (list syn)
-         (list))]
-    [_ (list)]))
+;; stx? loc? -> (or #f stx?)
+;; finds the smallest subexpression containing the given location.
+;; assumes that parent spans are supersets of their children's
+;; and children's are non-overlapping (true for surface syntax).
+(define (find-stx-at root lc)
+  (let loop ([syn root])
+    (cond
+      [(loc-in-span? lc (stx-span syn))
+       (match syn
+         [(stx (? list? children) _)
+          (or (for/or ([child children])
+                (loop child))
+              syn)]
+         [_ syn])]
+      [else #f])))
 
 ;; loc? span? -> boolean?
 ;; is the location contained within the span?

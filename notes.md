@@ -97,67 +97,9 @@ we don't want goto definition on `(ref-x)` to bring us to the template of `bind-
 
 In general, we want to distinguish between surface and macro-introduced syntax, and have knowledge of the surface syntax before and after expansion. before for macros and after for variables that may be bound only in expanded code. I don't want to keep adding fields to `stx` so maybe we should do node ids and mappings from node ids to info, moving towards something like [incremental reactive](#incremental-reactive)
 
-## query based
+## Things to do when we have grammars and binding rules
 
-parser is a `string -> (values id (hash id ast) (hash id span)`. returns root node, red tree, and mapping from node to source span.
-queries are functions, usually keyed by node id
-query system tracks a dependency graph of queries and caches results. queries are invalidated when relevant parts of the source changes. there should also be garbage collection to prevent space leaks.
-
-### parser
-```
-ast := var
-     | lit
-     | lambda([ast-id], ast-id)
-	 | fun-app(ast-id, [ast-id])
-     | let(ast-id, ast-id, ast-id)
-     | let-stx(sexpr-id, sexpr-id, ast-id)
-     | macro-app(ast-id, [sexpr-id])
-
-sexpr := var
-       | lit
-       | [sexpr-id]
-
-id := path
-path := [segment]
-segment := top-children
-         | index(nat)
-		 | lambda-args | lambda-body
-		 | fun-app-head | fun-app-args
-         | let-rhs | let-lhs | let-body
-		 | let-stx-pattern | let-stx-template | let-stx-body
-         | macro-app-head | macro-app-args
-         | expanded
-```
-How we assign IDs to nodes is important, since when IDs change, queries involving those nodes are invalidated. We want stable ids that change very little as the program is edited.
-Path-based identification doesn't work well on pure s-expressions, where inserts, transposes, etc. are common like in an expression body, since they affect the ids of neighbors. But on an AST, the path segments are "more semantic", and thus are more stable.
-In this design, editing nodes doesn't affect their ascendants or siblings, but editing/moving nodes affects their descendants and, in some cases, siblings.
-Macros introduce challenges:
-- Without a grammar, we have to use index-based ids for macro applications (most of surface syntax), which are unstable. This will lead to lots of unnecessary cache invalidations on edits
-- We need to map macro use syntax back to its origin after expanding the macro to support operations like "find references"
-- Since expansion may have side effects, we cannot lazily/incrementally expand. Thus, like parsing, it will happen before queries and potentially invalidate them.
-However, grammars help:
-- We can dynamically generate new types of AST nodes, constructors for them, and path segments, having a more semantics-stable node identification than raw sexpr indices
-- Assuming hygiene, we only need to expand to detect syntax errors on procedurally macro-generated syntax. Binding resolution can happen on macro uses for macros with grammar + binding.
-- Without procedural macros that can construct arbitrary syntax, we don't even need to expand as long as we check every template of every macro. Kind of like type checking but grammar. We can even have procedural macros as long as their output is statically checkable without expanding. But if we add procedural IDE hooks like what racket does for hover info, we'll need to expand.
-### Queries
-example: go to definition
-```
-;; node-id -> (or #f node-id)
-goto-definition(node-id):
-  match node-e(node-id)
-  | x ->
-    parent-id = get-parent(node-id)
-    parent-id and goto-definition/help(node-id, x)
-
-;; node-id symbol -> (or #f node-id)
-goto-definition/help(node-id, name):
-  match node-e(node-id)
-  | let x = _ in _ ->
-    if name == node-e(x)
-    then x
-    else get-parent(node-id) and goto-definition/help(get-parent(node-id), name)
-```
-Instead of a top-down, environment-accumulating traversal, we start at the node in question and traverse _up_ the tree until we hit its binding site.
-Some queries are updated on each change, like those for diagnostics.
-### Query System
-When the program is edited, some queries need to be invalidated.
+- completions can be more rich. can add labels and kinds, like an identifier can be a treason-var, my-dsl-var, treason-macro, my-dsl-macro, etc.
+- binding resolution can happen without expanding. syntax well-formedness can mostly happen without expanding. you still need to check expanded syntax, if it is possible to create arbitrary syntax procedurally. if we have templates which do grammar checks kind of like a static type system for nonterminals, we can get a lot done before expansion. probably wouldn't be worth it if arbitrary procedural syntax creation forces us to expand anyway. Otherwise, since the surface syntax is statically rich, we would be able to perform all analysis without expanding
+  - actually, macro-defining macros breaks this because a grammar and binding rules may only be known after expanding.
+- completions may be simpler. might not have to worry as much about multiple expansion environments since we'll know more about scopes and references. hygiene might also help.
