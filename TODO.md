@@ -36,6 +36,8 @@
 - [ ] pattern-bound variable references in template should count as references/definitions
 - [ ] goto definition can have multiple answers if the reference ends up being duplicated and resolves multiple separate times
 - [ ] think about format-identifier like auto-generated struct field accessors
+- [ ] for auto-complete, insert a placeholder node when we aren't just at the end of an id and then fetch its environment. doesn't play nice with `eq?` since you have to rebuild everything to insert. also should make a new sentinel value type.
+- [ ] parinfer fault-tolerant parser
 - [x] abstraction for stx replacements. `(stx-rebuild syn (let ([,x^ ,rhs^]) ,body^))`
   - go element by element. for equal datum/structure vs origin, copy origin span. for unquoted forms, just directly inject without editing span.
 - [x] stx patterns or stx matching

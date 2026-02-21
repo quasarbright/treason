@@ -107,7 +107,8 @@ do we want actual types instead of json?
                                                 'change TextDocumentSyncKind/Full)
                       'documentSymbolProvider #t
                       'definitionProvider #t
-                      'referencesProvider #t)))
+                      'referencesProvider #t
+                      'completionProvider (hasheq 'triggerCharacters (list "(" "[")))))
 
     (define/public (textDocument/documentSymbol parameters)
       (match parameters
@@ -139,6 +140,17 @@ do we want actual types instead of json?
          (define reference-sites (get-reference-sites-of reference-site))
          (for/list ([reference-site reference-sites])
            (span->location (stx-span reference-site)))]))
+    
+    (define/public (textDocument/completion parameters)
+      (match parameters
+        [(hash* ['textDocument (hash* ['uri uri])]
+                ['position pos])
+         (define syn (hash-ref syntaxes uri (lambda () (error 'textDocument/documentSymbol "unknown document ~a" uri))))
+         (define lc (position->loc pos uri))
+         (define completion-site (find-stx-at syn lc))
+         (define names-in-scope (get-names-in-scope completion-site))
+         (for/list ([name names-in-scope])
+           (hasheq 'label (symbol->string name)))]))
 
     (define/public (textDocument/didOpen parameters)
       (define text-document (hash-ref parameters 'textDocument))
