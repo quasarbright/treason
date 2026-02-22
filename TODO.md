@@ -38,6 +38,8 @@
 - [ ] think about format-identifier like auto-generated struct field accessors
 - [ ] for auto-complete, insert a placeholder node when we aren't just at the end of an id and then fetch its environment. doesn't play nice with `eq?` since you have to rebuild everything to insert. also should make a new sentinel value type.
 - [ ] parinfer fault-tolerant parser
+- [ ] unused definition diagnostic
+- [ ] instead of having `#f` for non-macros, have renamed gensym. and have core forms bound to their symbols. do it like the scope graph prototype. that way we can shadow core forms.
 - [x] abstraction for stx replacements. `(stx-rebuild syn (let ([,x^ ,rhs^]) ,body^))`
   - go element by element. for equal datum/structure vs origin, copy origin span. for unquoted forms, just directly inject without editing span.
 - [x] stx patterns or stx matching
