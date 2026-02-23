@@ -40,6 +40,9 @@
 - [ ] parinfer fault-tolerant parser
 - [ ] unused definition diagnostic
 - [ ] instead of having `#f` for non-macros, have renamed gensym. and have core forms bound to their symbols. do it like the scope graph prototype. that way we can shadow core forms.
+- [ ] references and definitions in patterns and templates. do pattern binding and resolution with the usual machinery? would need a new type of binding.
+- [ ] autocomplete via an identifier-only resolutions table won't work for `(let ([x <here>]))` since it fails to expand due to the missing body. so `<here>` won't ever be resolved. We could hard-code special support for this, but not for user-defined macros. For that, we'd need grammars and binding rules on macros, or try parents, which is unsound. I guess we could just write every node into the resolutions table and do the parent thing. Could also just always expand subexpressions, assuming reference positions. not sure which way would yield less dumb results.
+- [ ] write test that makes sure we don't insert cursor node when position is at the END of an identifier.
 - [x] abstraction for stx replacements. `(stx-rebuild syn (let ([,x^ ,rhs^]) ,body^))`
   - go element by element. for equal datum/structure vs origin, copy origin span. for unquoted forms, just directly inject without editing span.
 - [x] stx patterns or stx matching
