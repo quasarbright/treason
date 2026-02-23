@@ -3,7 +3,7 @@
 ;; Language server
 ;; https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/
 
-(provide)
+(provide (all-defined-out))
 (module+ main (main))
 (module+ test (require rackunit))
 (require json
