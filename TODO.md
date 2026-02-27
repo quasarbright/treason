@@ -1,8 +1,4 @@
-- [x] integrate expander into server
-  - [x] add new core forms
-  - [x] continue after error. see [notes](./notes.md#error-recovery)
-  - [x] error -> diagnostic
-- [ ] bug: find all references should also work on reference site, not just definition site
+- [ ] new expander is not using stx-error. need to rewrite with-stx-error-handling yourself and refactor. probably by hand. should write a bunch of tests for error cases.
 - [ ] check if client supports things before you call them, via client capabilities sent in init
 - [ ] more services
   - [ ] unused var
@@ -43,6 +39,12 @@
 - [ ] references and definitions in patterns and templates. do pattern binding and resolution with the usual machinery? would need a new type of binding.
 - [ ] autocomplete via an identifier-only resolutions table won't work for `(let ([x <here>]))` since it fails to expand due to the missing body. so `<here>` won't ever be resolved. We could hard-code special support for this, but not for user-defined macros. For that, we'd need grammars and binding rules on macros, or try parents, which is unsound. I guess we could just write every node into the resolutions table and do the parent thing. Could also just always expand subexpressions, assuming reference positions. not sure which way would yield less dumb results.
 - [ ] write test that makes sure we don't insert cursor node when position is at the END of an identifier.
+- [ ] make sure `(foo . (bar))` expands like `(foo bar)` and `(a . ())` as `(a)`. has different stx/cons structure. fix could just be a matter of augmenting stx-quote and making a stx-car abstraction that takes care of it. like not distinguishing between `(stx (cons stx (stx '()))` and `(stx (cons stx '()))` when breaking down listy stx
+- [ ] log stx errors to avoid `find-stx-errors`
+- [ ] unbound -> stx-error
+- [ ] properly use, propagate, and handle stx-error. lots of instances of fault-intolerance
+- [ ] expander needs to output syntax so the interpreter can know about source spans
+- [x] reader property-based test where you give it a string and then it reads it and makes sure the resulting spans correspond to the same datums from the source
 - [x] abstraction for stx replacements. `(stx-rebuild syn (let ([,x^ ,rhs^]) ,body^))`
   - go element by element. for equal datum/structure vs origin, copy origin span. for unquoted forms, just directly inject without editing span.
 - [x] stx patterns or stx matching
@@ -51,3 +53,8 @@
 - [x] go to definition
 - [x] consider decoupling LSP stuff from language stuff. For example, goto-definition returns a result in LSP format and takes in an LSP position, even though stx and spans are the internal types
 - [x] when you do "get references", make sure `gd` on definition site fetches references. Currently, goto-definition on the binding site returns `#f`. Might need to make it return the binding site anyway.
+- [x] integrate expander into server
+  - [x] add new core forms
+  - [x] continue after error. see [notes](./notes.md#error-recovery)
+  - [x] error -> diagnostic
+- [x] bug: find all references should also work on reference site, not just definition site

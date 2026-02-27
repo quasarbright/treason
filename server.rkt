@@ -8,7 +8,6 @@
 (module+ test (require rackunit))
 (require json
          "stx.rkt"
-         "stx-quote.rkt"
          "reader.rkt"
          "constants.rkt"
          "server-logging.rkt"
@@ -95,8 +94,8 @@ do we want actual types instead of json?
 
     ;; maps uris to text documents
     (define text-documents (make-hash))
-    ;; maps uris to surface syntaxes
-    (define syntaxes (make-hash))
+    ;; maps uris to expander-results
+    (define results (make-hash))
 
     (init-field client)
 
@@ -110,11 +109,17 @@ do we want actual types instead of json?
                       'referencesProvider #t
                       'completionProvider (hasheq 'triggerCharacters (list "(" "[")))))
 
+    ;; get-result : Symbol -> ExpanderResult
+    ;; Retrieves the expander result for the given URI.
+    (define/private (get-result uri method-name)
+      (hash-ref results uri
+                (lambda () (error method-name "unknown document ~a" uri))))
+
     (define/public (textDocument/documentSymbol parameters)
       (match parameters
         [(hash* ['textDocument (hash* ['uri uri])])
-         (define syn (hash-ref syntaxes uri (lambda () (error 'textDocument/documentSymbol "unknown document ~a" uri))))
-         (for/list ([x (get-all-surface-binding-sites-in syn)])
+         (define result (get-result uri 'textDocument/documentSymbol))
+         (for/list ([x (get-all-surface-binding-sites result)])
            (hash 'name (symbol->string (stx-e x))
                  'kind SymbolKind/Variable
                  'location (span->location (stx-span x))))]))
@@ -123,50 +128,46 @@ do we want actual types instead of json?
       (match parameters
         [(hash* ['textDocument (hash* ['uri uri])]
                 ['position pos])
-         (define syn (hash-ref syntaxes uri (lambda () (error 'textDocument/documentSymbol "unknown document ~a" uri))))
+         (define result (get-result uri 'textDocument/definition))
          (define lc (position->loc pos uri))
-         (define reference-site (find-stx-at syn lc))
-         (define binding-sites (get-binding-sites-of reference-site))
-         (for/list ([binding-site binding-sites])
-           (span->location (stx-span binding-site)))]))
+         (define spans (goto-definition result lc))
+         (for/list ([spn spans])
+           (span->location spn))]))
     
     (define/public (textDocument/references parameters)
       (match parameters
         [(hash* ['textDocument (hash* ['uri uri])]
                 ['position pos])
-         (define syn (hash-ref syntaxes uri (lambda () (error 'textDocument/documentSymbol "unknown document ~a" uri))))
+         (define result (get-result uri 'textDocument/references))
          (define lc (position->loc pos uri))
-         (define reference-site (find-stx-at syn lc))
-         (define reference-sites (get-reference-sites-of reference-site))
-         (for/list ([reference-site reference-sites])
-           (span->location (stx-span reference-site)))]))
+         (define spans (find-references result lc))
+         (for/list ([spn spans])
+           (span->location spn))]))
     
     (define/public (textDocument/completion parameters)
       (match parameters
         [(hash* ['textDocument (hash* ['uri uri])]
                 ['position pos])
-         (define syn (hash-ref syntaxes uri (lambda () (error 'textDocument/documentSymbol "unknown document ~a" uri))))
+         (define result (get-result uri 'textDocument/completion))
          (define lc (position->loc pos uri))
-         (define completion-site (find-stx-at syn lc))
-         (define names-in-scope (get-names-in-scope completion-site))
-         (for/list ([name names-in-scope])
+         (define names (autocomplete result lc))
+         (for/list ([name names]
+                    #:unless (member name keywords))
            (hasheq 'label (symbol->string name)))]))
 
     (define/public (textDocument/didOpen parameters)
       (define text-document (hash-ref parameters 'textDocument))
       (define uri (hash-ref text-document 'uri))
       (hash-set! text-documents uri text-document)
-      (define syn (string->stx uri (hash-ref text-document 'text)))
-      (hash-set! syntaxes uri syn)
-      (push-diagnostics uri))
+      (analyze-and-store! uri (hash-ref text-document 'text)))
     
-    (define/private (push-diagnostics uri)
-      (define syn
-        (hash-ref syntaxes
-                  uri
-                  (lambda () (error 'textDocument/didChange "unknown document: ~a" uri))))
-      (define errors (analyze! syn))
-      (define diagnostics (map stx-error->diagnostic errors))
+    ;; analyze-and-store! : String String -> Void
+    ;; Parses source text, runs the expander, stores the result, and pushes diagnostics.
+    (define/private (analyze-and-store! uri text)
+      (define syn (string->stx uri text))
+      (define result (analyze! syn))
+      (hash-set! results uri result)
+      (define diagnostics (map stx-error->diagnostic (expander-result-errors result)))
       (send client textDocument/publishDiagnostics 
             (hasheq 'uri uri
                     'diagnostics diagnostics)))
@@ -197,15 +198,13 @@ do we want actual types instead of json?
            (hash-set (hash-set text-document 'text new-text)
                      'version version))
          (hash-set! text-documents uri new-text-document)
-         (define syn (string->stx uri (hash-ref new-text-document 'text)))
-         (hash-set! syntaxes uri syn)
-         (analyze! syn)
-         (push-diagnostics uri)]))
+         (analyze-and-store! uri (hash-ref new-text-document 'text))]))
     
     (define/public (textDocument/didClose parameters)
       (match parameters
         [(hash* ['textDocument (hash* ['uri uri])])
-         (hash-remove! text-documents uri)]))))
+         (hash-remove! text-documents uri)
+         (hash-remove! results uri)]))))
 
 ;; string? natural? natural? -> natural?
 ;; computes the index corresponding to the given position in the text
@@ -296,43 +295,6 @@ do we want actual types instead of json?
                 (list (stx 'x (span (loc "test.tsn" 0 23) (loc "test.tsn" 0 24)))
                       (stx 'x (span (loc "test.tsn" 0 23) (loc "test.tsn" 0 24))))))
 
-;; stx? loc? -> (or #f stx?)
-;; finds the smallest subexpression containing the given location.
-;; assumes that parent spans are supersets of their children's
-;; and children's are non-overlapping (true for surface syntax).
-(define (find-stx-at root lc)
-  (let loop ([syn root])
-    (cond
-      [(loc-in-span? lc (stx-span syn))
-       (match syn
-         [(stx (? list? children) _)
-          (or (for/or ([child children])
-                (loop child))
-              syn)]
-         [_ syn])]
-      [else #f])))
-
-;; loc? span? -> boolean?
-;; is the location contained within the span?
-(define (loc-in-span? lc spn)
-  (match spn
-    [(span lc-start lc-end)
-     (and (loc<=? lc-start lc)
-          (loc<? lc lc-end))]))
-
-;; is lc1 before or on lc2?
-(define (loc<=? lc1 lc2)
-  (or (equal? lc1 lc2)
-      (loc<? lc1 lc2)))
-
-;; is lc1 before lc2?
-(define (loc<? lc1 lc2)
-  (match* (lc1 lc2)
-    [((loc src1 line1 col1) (loc src2 line2 col2))
-     (and (equal? src1 src2)
-          (if (= line1 line2)
-              (< col1 col2)
-              (< line1 line2)))]))
 
 (define (span->location spn)
   (hash 'uri (loc-source (span-start spn))
