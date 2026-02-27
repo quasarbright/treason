@@ -44,7 +44,6 @@
 - [ ] properly use, propagate, and handle stx-error. lots of instances of fault-intolerance
   - [ ] unbound -> stx-error
 - [ ] expander needs to output syntax instead of datum so the interpreter can know about source spans
-- [ ] definition actually should not be self reference. otherwise, single-use variables can't go back and forth on `gd` which is annoying
 - [x] reader property-based test where you give it a string and then it reads it and makes sure the resulting spans correspond to the same datums from the source
 - [x] abstraction for stx replacements. `(stx-rebuild syn (let ([,x^ ,rhs^]) ,body^))`
   - go element by element. for equal datum/structure vs origin, copy origin span. for unquoted forms, just directly inject without editing span.
@@ -60,3 +59,4 @@
   - [x] error -> diagnostic
 - [x] bug: find all references should also work on reference site, not just definition site
 - [x] autocomplete property tests. if bad syntax, then skip. need to do error handling in def pass1, tricky though
+- [x] definition actually should not be self reference. otherwise, single-use variables can't go back and forth on `gd` which is annoying

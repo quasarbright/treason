@@ -669,10 +669,7 @@
     [(scope parent bindings)
      (when (hash-has-key? bindings key)
        (error 'scope-bind! "name already bound: ~a" id))
-     (hash-set! bindings key bnd)
-     ;; Record binding site as self-reference for LSP
-     ;; Use parent scope so autocomplete at binding site shows pre-binding names
-     (record-resolution! id bnd parent)]
+     (hash-set! bindings key bnd)]
     [(disjoin mark1 scope1 mark2 scope2)
      (cond
        [(top-mark=? id mark1) (scope-bind! scope1 (drop-top-mark id) bnd)]
@@ -987,11 +984,20 @@
 
 ;; goto-definition : ExpanderResult Loc -> (Listof Span)
 ;; Returns spans of binding sites for the identifier at position.
+;; If the node is itself a binding site, includes its own span
+;; (triggers VS Code's "already here" fallback to show references).
 (define (goto-definition result pos)
   (define node (find-node-at-position result pos))
-  (if node
-      (filter-map stx-span (get-binding-sites-of result node))
-      '()))
+  (cond
+    [(not node) '()]
+    [else
+     (define resolution-sites (filter-map stx-span (get-binding-sites-of result node)))
+     (define id (stx-id node))
+     (define is-binder? (and id (hash-has-key? (expander-state-references (expander-result-state result)) id)))
+     (define self-span (and is-binder? (stx-span node)))
+     (if self-span
+         (remove-duplicates (cons self-span resolution-sites) equal?)
+         resolution-sites)]))
 
 ;; find-references : ExpanderResult Loc -> (Listof Span)
 ;; Returns spans of all reference sites for the node at position.
