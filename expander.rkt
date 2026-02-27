@@ -228,7 +228,7 @@
        [(var-binding? binding) (var-binding-name binding)]
        [(keyword-binding? binding) (identifier-symbol id)]
        [(unbound? binding) (stx-error 'expand "unbound identifier" expr #f)]
-       [else (error 'expand-expr "unexpected binding type")])]
+       [else (stx-error 'expand-expr "unexpected binding type" expr #f)])]
     [(stx (list* head-stx _) _ _ _)
      #:when (identifier? head-stx)
      (define binding (scope-resolve scp head-stx))
@@ -244,7 +244,7 @@
        ;; let
        [(and (keyword-binding? binding)
              (eq? 'let (keyword-binding-name binding)))
-        (with-handlers ([exn:fail? (lambda (e) (stx-error 'let "bad syntax" expr #f))])
+        (with-handlers ([exn:fail? (lambda (_e) (stx-error 'let "bad syntax" expr #f))])
           (define elems (stx-list expr))
           (define binding-clause (car (stx-list (list-ref elems 1))))
           (define body (list-ref elems 2))
@@ -261,7 +261,7 @@
        ;; let-syntax
        [(and (keyword-binding? binding)
              (eq? 'let-syntax (keyword-binding-name binding)))
-        (with-handlers ([exn:fail? (lambda (e) (stx-error 'let-syntax "bad syntax" expr #f))])
+        (with-handlers ([exn:fail? (lambda (_e) (stx-error 'let-syntax "bad syntax" expr #f))])
           (define elems (stx-list expr))
           (define binding-clause (car (stx-list (list-ref elems 1))))
           (define body (list-ref elems 2))
@@ -274,8 +274,10 @@
             [_ (stx-error 'let-syntax "bad syntax" expr #f)]))]
        ;; macro application
        [(macro-binding? binding)
-        (define-values (marked-stx disjoined-scp) (expand-macro head-stx expr scp))
-        (expand-expr marked-stx disjoined-scp)]
+        (define who (identifier-symbol (macro-binding-site binding)))
+        (with-handlers ([exn:fail? (lambda (_e) (stx-error who "bad syntax" expr #f))])
+          (define-values (marked-stx disjoined-scp) (expand-macro head-stx expr scp))
+          (expand-expr marked-stx disjoined-scp))]
        ;; unbound or variable in head position - syntax error
        ;; Still resolve identifier arguments for fault-tolerant LSP support
        [(or (unbound? binding) (var-binding? binding))
@@ -283,7 +285,7 @@
           (when (identifier? arg)
             (scope-resolve scp arg)))
         (stx-error 'expand "not a procedure or syntax" expr head-stx)]
-       [else (error 'expand-expr "unexpected form: ~a" expr)])]
+       [else (stx-error 'expand-expr "unexpected form: ~a" expr head-stx)])]
     ;; Non-identifier in head position or other forms
     [(stx (list* _ _) _ _ _)
      (stx-error 'expand "bad syntax" expr #f)]))
@@ -320,7 +322,7 @@
        ;; define
        [(and (keyword-binding? binding)
              (eq? 'define (keyword-binding-name binding)))
-        (with-handlers ([exn:fail? (lambda (e) (stx-error 'define "bad syntax" def #f))])
+        (with-handlers ([exn:fail? (lambda (_e) (stx-error 'define "bad syntax" def #f))])
           (define elems (stx-list def))
           (define var-stx (list-ref elems 1))
           (define expr-stx (list-ref elems 2))
@@ -331,7 +333,7 @@
        ;; define-syntax
        [(and (keyword-binding? binding)
              (eq? 'define-syntax (keyword-binding-name binding)))
-        (with-handlers ([exn:fail? (lambda (e) (stx-error 'define-syntax "bad syntax" def #f))])
+        (with-handlers ([exn:fail? (lambda (_e) (stx-error 'define-syntax "bad syntax" def #f))])
           (define elems (stx-list def))
           (define var-stx (list-ref elems 1))
           (define macrot-stx (list-ref elems 2))
@@ -347,7 +349,7 @@
        ;; #%expression
        [(and (keyword-binding? binding)
              (eq? '#%expression (keyword-binding-name binding)))
-        (with-handlers ([exn:fail? (lambda (e) (stx-error '#%expression "bad syntax" def #f))])
+        (with-handlers ([exn:fail? (lambda (_e) (stx-error '#%expression "bad syntax" def #f))])
           (define expr-stx (list-ref (stx-list def) 1))
           `(#%expression ,expr-stx))]
        ;; macro application
@@ -634,7 +636,7 @@
 (define (scope-resolve scp id)
   (define binding (scope-resolve-internal scp id))
   ;; Record the resolution for LSP
-  (record-resolution! id (and (unbound? binding) #f binding) scp)
+  (record-resolution! id (if (unbound? binding) #f binding) scp)
   binding)
 
 ;; scope-resolve-internal : Scope Identifier -> (or Binding unbound)
@@ -1118,5 +1120,20 @@
        (begin))
      (begin
        (define x5 2)
-       (#%expression x2)))))
+       (#%expression x2))))
+
+  ;; make sure dotted patterns work
+  (check-match
+   (expand
+    '(let-syntax ([m (syntax-rules () [(m . a) (let ([a 2]) a)])])
+        (m . a)))
+   '(let ([a2 2]) a2))
+  
+  ;; dotted (a . (b)) = (a b)
+  (displayln "skipping dot paren test")
+  #;
+  (check-match
+   (expand
+    '(#%expression . (2)))
+   '2))
 

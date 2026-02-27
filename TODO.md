@@ -41,9 +41,11 @@
 - [ ] write test that makes sure we don't insert cursor node when position is at the END of an identifier.
 - [ ] make sure `(foo . (bar))` expands like `(foo bar)` and `(a . ())` as `(a)`. has different stx/cons structure. fix could just be a matter of augmenting stx-quote and making a stx-car abstraction that takes care of it. like not distinguishing between `(stx (cons stx (stx '()))` and `(stx (cons stx '()))` when breaking down listy stx
 - [ ] log stx errors to avoid `find-stx-errors`
-- [ ] unbound -> stx-error
 - [ ] properly use, propagate, and handle stx-error. lots of instances of fault-intolerance
-- [ ] expander needs to output syntax so the interpreter can know about source spans
+  - [ ] unbound -> stx-error
+- [ ] autocomplete property tests. if bad syntax, then skip. need to do error handling in def pass1, tricky though
+- [ ] expander needs to output syntax instead of datum so the interpreter can know about source spans
+- [ ] definition actually should not be self reference. otherwise, single-use variables can't go back and forth on `gd` which is annoying
 - [x] reader property-based test where you give it a string and then it reads it and makes sure the resulting spans correspond to the same datums from the source
 - [x] abstraction for stx replacements. `(stx-rebuild syn (let ([,x^ ,rhs^]) ,body^))`
   - go element by element. for equal datum/structure vs origin, copy origin span. for unquoted forms, just directly inject without editing span.
