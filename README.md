@@ -1,4 +1,4 @@
-tiny-lispy-lsp
+treason
 ==============
 tiny lispy language with a language server
 

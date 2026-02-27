@@ -1,10 +1,10 @@
 #lang scribble/manual
-@require[@for-label[tiny-lispy-lsp
+@require[@for-label[treason
                     racket/base]]
 
-@title{tiny-lispy-lsp}
+@title{treason}
 @author{mdelmonaco}
 
-@defmodule[tiny-lispy-lsp]
+@defmodule[treason]
 
 Package Description Here
