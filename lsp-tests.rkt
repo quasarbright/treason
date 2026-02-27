@@ -1443,8 +1443,6 @@
   ;; - The soundness property is about "can I use this name here" which
   ;;   applies to reference positions, not binding positions
   
-  (displayln "skipping autocomplete tests until we have proper stx-error handling")
-  #;
   (test-case
    "consistency: autocomplete soundness check"
    (for ([sample sample-programs])

@@ -43,7 +43,6 @@
 - [ ] log stx errors to avoid `find-stx-errors`
 - [ ] properly use, propagate, and handle stx-error. lots of instances of fault-intolerance
   - [ ] unbound -> stx-error
-- [ ] autocomplete property tests. if bad syntax, then skip. need to do error handling in def pass1, tricky though
 - [ ] expander needs to output syntax instead of datum so the interpreter can know about source spans
 - [ ] definition actually should not be self reference. otherwise, single-use variables can't go back and forth on `gd` which is annoying
 - [x] reader property-based test where you give it a string and then it reads it and makes sure the resulting spans correspond to the same datums from the source
@@ -60,3 +59,4 @@
   - [x] continue after error. see [notes](./notes.md#error-recovery)
   - [x] error -> diagnostic
 - [x] bug: find all references should also work on reference site, not just definition site
+- [x] autocomplete property tests. if bad syntax, then skip. need to do error handling in def pass1, tricky though

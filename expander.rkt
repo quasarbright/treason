@@ -354,8 +354,10 @@
           `(#%expression ,expr-stx))]
        ;; macro application
        [(macro-binding? binding)
-        (define-values (marked-stx disjoined-scp) (expand-macro head-stx def scp))
-        (with-disjoin (expand-def-pass1 marked-stx disjoined-scp) disjoined-scp)]
+        (define who (identifier-symbol (macro-binding-site binding)))
+        (with-handlers ([exn:fail? (lambda (_e) (stx-error who "bad syntax" def #f))])
+          (define-values (marked-stx disjoined-scp) (expand-macro head-stx def scp))
+          (with-disjoin (expand-def-pass1 marked-stx disjoined-scp) disjoined-scp))]
        ;; unbound or variable in head position - syntax error
        [(or (unbound? binding) (var-binding? binding))
         (stx-error 'expand "not a procedure or syntax" def head-stx)]
@@ -1135,5 +1137,15 @@
   (check-match
    (expand
     '(#%expression . (2)))
-   '2))
+   '2)
+  
+  ;; fault-tolerant block
+  (check-match
+   (expand
+    '(block
+       (bad)
+       (define x 2)))
+   `(block
+      ,(? stx-error?)
+      (define x0 2))))
 
