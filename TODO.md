@@ -1,62 +1,82 @@
-- [ ] new expander is not using stx-error. need to rewrite with-stx-error-handling yourself and refactor. probably by hand. should write a bunch of tests for error cases.
-- [ ] check if client supports things before you call them, via client capabilities sent in init
-- [ ] more services
-  - [ ] unused var
-  - [ ] autocomplete
-  - [ ] rename symbol
-  - [ ] syntax highlighting
-  - [ ] macro/variable info on hover. like maybe the pattern?
-  - [ ] definition vs use-site indicator?
-  - [ ] macro vs variable indicator?
-  - [ ] see expanded form of highlighted selection
-  - [ ] disappeared use indication?
-  - [ ] tokenizer so `foo-bar` is one "word"
-- [ ] bug: goto definition and usages on macros won't work because neither are present in expanded code! need to record this stuff during expansion or something. see [notes](./notes.md#goto-definition-and-references-with-macros)
-- [ ] figure out definition and use-site during expander pass? or at least record info to do that. might be best done after the ambient db stuff with hashes from node id to info.
-- [ ] handle bad syntax in lsp operations
-- [ ] handle eof in json-rpc message reader
-- [ ] graceful error handling
-- [ ] properly link the server executable so the command in the extension can just be treason-language-server and not a hard-coded path
-- [ ] decouple server logic from json, or at least make convenient wrappers
-- [ ] test after making server more testable
-- [ ] shutdown
-- [ ] figure out client capabilities once you start sending diagnostics. included in the initialize request
-- [ ] explicitly define terminology like line, column, position, index, etc.
-- [ ] cancellation? optional
-- [ ] parse the file on update and store ast, don't want to parse on every operation
-  - [ ] define a `find-enclosing-sexpr: loc? -> (or #f stx?)` which finds the enclosing sexpr. goto-definition and goto-references can just do a eq? check to compare identifiers with the given sexpr instead of checking for location. you could also cache parent references to make this even easier. NOTE this might not be possible with macros since they duplicate template spans
-- [ ] do after syntax-spec support probably: let's say you're writing an if and so far you have `(if (...))` just the condition. you won't get IDE services bc the whole if fails to expand since the use-site doesn't match the pattern. for some macros, you actually should expand sub-expressions even if the use-site is malformed. can use grammar to inform whether to do this.
-- [ ] incremental reactive thing. see [notes](./notes.md#incremental-reactive)
-- [ ] how the hell can you do autocomplete inside of a macro use? you don't have binding info until after expansion, right? if the use ends up erroring because you're still typing it, how would you possibly have information about bindings available inside of that? either way, the expanded syntax can completely change as you're typing, especially if it's a big compiler macro. maybe you'll have scopes up to but not from inside of the use site that you can use, and it'll be better than nothing.
-- [ ] make sure syntax error nodes don't affect transformers. should be fine in pattern-based, but may cause problems in procedural.
-- [ ] pattern-bound variable references in template should count as references/definitions
-- [ ] goto definition can have multiple answers if the reference ends up being duplicated and resolves multiple separate times
-- [ ] think about format-identifier like auto-generated struct field accessors
-- [ ] for auto-complete, insert a placeholder node when we aren't just at the end of an id and then fetch its environment. doesn't play nice with `eq?` since you have to rebuild everything to insert. also should make a new sentinel value type.
-- [ ] parinfer fault-tolerant parser
-- [ ] unused definition diagnostic
-- [ ] instead of having `#f` for non-macros, have renamed gensym. and have core forms bound to their symbols. do it like the scope graph prototype. that way we can shadow core forms.
-- [ ] references and definitions in patterns and templates. do pattern binding and resolution with the usual machinery? would need a new type of binding.
-- [ ] autocomplete via an identifier-only resolutions table won't work for `(let ([x <here>]))` since it fails to expand due to the missing body. so `<here>` won't ever be resolved. We could hard-code special support for this, but not for user-defined macros. For that, we'd need grammars and binding rules on macros, or try parents, which is unsound. I guess we could just write every node into the resolutions table and do the parent thing. Could also just always expand subexpressions, assuming reference positions. not sure which way would yield less dumb results.
-- [ ] write test that makes sure we don't insert cursor node when position is at the END of an identifier.
-- [ ] make sure `(foo . (bar))` expands like `(foo bar)` and `(a . ())` as `(a)`. has different stx/cons structure. fix could just be a matter of augmenting stx-quote and making a stx-car abstraction that takes care of it. like not distinguishing between `(stx (cons stx (stx '()))` and `(stx (cons stx '()))` when breaking down listy stx
-- [ ] log stx errors to avoid `find-stx-errors`
-- [ ] properly use, propagate, and handle stx-error. lots of instances of fault-intolerance
-  - [ ] unbound -> stx-error
-- [ ] expander needs to output syntax instead of datum so the interpreter can know about source spans
-- [x] reader property-based test where you give it a string and then it reads it and makes sure the resulting spans correspond to the same datums from the source
-- [x] abstraction for stx replacements. `(stx-rebuild syn (let ([,x^ ,rhs^]) ,body^))`
-  - go element by element. for equal datum/structure vs origin, copy origin span. for unquoted forms, just directly inject without editing span.
-- [x] stx patterns or stx matching
-- [x] no parent, immutable, simplify tests. macro expansion will make parent weird
-- [x] decouple server logic from read/write over wire
-- [x] go to definition
-- [x] consider decoupling LSP stuff from language stuff. For example, goto-definition returns a result in LSP format and takes in an LSP position, even though stx and spans are the internal types
-- [x] when you do "get references", make sure `gd` on definition site fetches references. Currently, goto-definition on the binding site returns `#f`. Might need to make it return the binding site anyway.
-- [x] integrate expander into server
-  - [x] add new core forms
-  - [x] continue after error. see [notes](./notes.md#error-recovery)
-  - [x] error -> diagnostic
-- [x] bug: find all references should also work on reference site, not just definition site
-- [x] autocomplete property tests. if bad syntax, then skip. need to do error handling in def pass1, tricky though
-- [x] definition actually should not be self reference. otherwise, single-use variables can't go back and forth on `gd` which is annoying
+
+## migrated to beads
+
+- grammar-informed early subexpression expansion for incomplete macro uses
+  - treason-idb (blocked on treason-94y)
+- stx-error node behavior in procedural macro transformers
+  - treason-7ma (blocked on treason-yyc → treason-2dj → treason-5lu)
+  - prereqs: syntax-quote (treason-5lu), procedural macros (treason-2dj), local-expand (treason-yyc)
+- pattern-bound variable references in template should count as references/definitions
+  - redundant with treason-0kz
+- goto definition can have multiple answers
+  - done
+- format-identifier / auto-generated struct field accessors
+  - removed
+- autocomplete placeholder node insertion
+  - done
+- parinfer fault-tolerant parser
+  - treason-1pg (epic)
+- unused definition diagnostic
+  - redundant with treason-tr8
+- `#f` for non-macros → renamed gensym, core forms bound to symbols
+  - done
+- references and definitions in patterns and templates
+  - redundant with treason-0kz
+- autocomplete in incomplete macro uses (e.g. let with missing body)
+  - done
+- write test: cursor node not inserted at END of identifier
+  - treason-v33
+- dotted pair expansion: `(foo . (bar))` should expand like `(foo bar)`
+  - treason-v80
+- log stx errors instead of find-stx-errors
+  - treason-kwx
+- properly use, propagate, and handle stx-error; unbound → stx-error
+  - treason-bst
+- expander output syntax instead of datum for interpreter source spans
+  - treason-u0l
+
+
+- new expander is not using stx-error. need to rewrite with-stx-error-handling yourself and refactor. probably by hand. should write a bunch of tests for error cases.
+  - treason-98a
+- check if client supports things before you call them, via client capabilities sent in init
+  - treason-6o1
+- figure out client capabilities once you start sending diagnostics. included in the initialize request
+  - treason-6o1
+- more services (epic)
+  - treason-t8z
+  - unused var: treason-tr8
+  - autocomplete: stale, already done
+  - rename symbol: treason-stq
+  - syntax highlighting + tokenizer: treason-4kd
+  - macro/variable info on hover: treason-2l8
+  - definition vs use-site indicator / macro vs variable indicator: treason-9q6 (deferred, needs design)
+  - see expanded form of highlighted selection: treason-r5m (deferred, needs design)
+  - disappeared use indication: treason-tla (blocked on grammar/binding rules treason-94y)
+- bug: goto definition and usages on macros won't work because neither are present in expanded code
+  - done
+- figure out definition and use-site during expander pass
+  - done
+- handle bad syntax in lsp operations
+  - done
+- handle eof in json-rpc message reader
+  - treason-19k
+- graceful error handling
+  - done
+- properly link the server executable so the command in the extension can just be treason-language-server and not a hard-coded path
+  - treason-nj9
+- decouple server logic from json, or at least make convenient wrappers
+  - done
+- test after making server more testable
+  - done
+- shutdown
+  - treason-ycr
+- explicitly define terminology like line, column, position, index, etc.
+  - treason-9u0
+- cancellation? optional
+  - treason-oax
+- parse the file on update and store ast
+  - done
+- incremental reactive thing
+  - obsolete
+- how the hell can you do autocomplete inside of a macro use?
+  - done

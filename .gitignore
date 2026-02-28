@@ -6,3 +6,6 @@ compiled/
 /doc/
 
 logs.txt
+
+# Dolt sql-server working directory (runtime artifact, not tracked)
+beads_treason/

@@ -103,3 +103,66 @@ In general, we want to distinguish between surface and macro-introduced syntax, 
 - binding resolution can happen without expanding. syntax well-formedness can mostly happen without expanding. you still need to check expanded syntax, if it is possible to create arbitrary syntax procedurally. if we have templates which do grammar checks kind of like a static type system for nonterminals, we can get a lot done before expansion. probably wouldn't be worth it if arbitrary procedural syntax creation forces us to expand anyway. Otherwise, since the surface syntax is statically rich, we would be able to perform all analysis without expanding
   - actually, macro-defining macros breaks this because a grammar and binding rules may only be known after expanding.
 - completions may be simpler. might not have to worry as much about multiple expansion environments since we'll know more about scopes and references. hygiene might also help.
+
+## source locations for macro uses and blame
+
+in current design
+```racket
+(block
+ (define-syntax-rule (m)
+   (f))
+ (m))
+```
+(m) gets use site span, so (f) runtime error points to m
+
+but
+```racket
+(block
+ (define-syntax-rule (m x)
+   (f x))
+ (m unbound))
+```
+
+will have f runtime error point to the template
+
+this makes no sense.
+
+syntax errors assuming grammars exist:
+- grammar violation is use blame
+- error in introduced is macro blame
+
+runtime errors:
+- grammars have contracts for runtime blame?
+
+alright, next steps:
+- macro output should just keep template span always, don't do the override
+- runtime blame will require more thought
+
+actually hold on
+```racket
+(block
+ (define-syntax-rule (m x)
+   (lambda (x x) body))
+ (m unbound))
+```
+this will give duplicate id on the second x, which has use site span. so we'd get a stx error blaming the lambda expr template span and the x subexpr use-site span. so which should get the red squiggly? conflict between specificity and correct blame
+
+## syntax error stack trace
+
+when we get a syntax error, it would be nice if we got something like a stack trace that tells us about the intermediate expansion steps. this would help with syntax error blame.
+
+maybe the stack corresponds to pending expand-macro calls
+
+```racket
+(m1) ; stack:
+~> (m2) ; stack: m1
+~> (m3) ; stack: m1 m2
+~> (let () (m4)) ; stack: m1 m2
+; let expands successfully, empty the stack.
+; now expand body
+~> (m4) ; stack:
+```
+
+although we might want to be more general since a macro can change the context in which a child expands. might just want to do it based on origin tracking, or maybe a combination.
+
+need to think this through
