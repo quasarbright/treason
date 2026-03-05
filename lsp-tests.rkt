@@ -150,6 +150,17 @@
     (goto-definition source (find-position source "x" 0))
     (list (hash 'uri test-uri 'range (find-range source "x" 0)))))
 
+  ;; 5b. block/define - binding site with no references (regression test for issue #6)
+  (test-case
+   "goto-def: block define binding site no references"
+   ;; When a define binding has no references, goto-definition on the binding
+   ;; site should still return the binding site itself (not empty list).
+   (define source "(block (define x 1))")
+   ;; x binding site returns itself even with no references
+   (check-equal?
+    (goto-definition source (find-position source "x" 0))
+    (list (hash 'uri test-uri 'range (find-range source "x" 0)))))
+
   ;; 6. let-syntax - macro binding
   (test-case
    "goto-def: let-syntax"
@@ -728,10 +739,10 @@
    ;; The surface $x (in "def-m m $x") should be a binding site for given-$x
    ;; When m is called, it defines given-$x (which is the surface $x) and references
    ;; the macro-introduced $x from def-m
-   ;; The surface $x at "def-m m $x" should be findable
+   ;; The surface $x at "def-m m $x" is a binding site (for given-$x), so it returns itself
    (check-equal?
     (goto-definition source (find-position source "$x" 4))
-    (list)))
+    (list (hash 'uri test-uri 'range (find-range source "$x" 4)))))
 
   ;; 5. Hygiene - autocomplete respects hygiene
   (test-case

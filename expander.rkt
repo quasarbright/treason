@@ -328,6 +328,7 @@
           (define var-name (gensym (identifier-symbol var-stx)))
           (define var-bnd (var-binding var-stx var-name))
           (scope-bind! scp var-stx var-bnd)
+          (record-binding-site! var-stx)
           `(define ,var-name ,expr-stx))]
        ;; define-syntax
        [(and (keyword-binding? binding)
@@ -338,6 +339,7 @@
           (define macrot-stx (list-ref elems 2))
           (define m-binding (macro-binding var-stx macrot-stx scp))
           (scope-bind! scp var-stx m-binding)
+          (record-binding-site! var-stx)
           `(begin))]
        ;; begin
        [(and (keyword-binding? binding)
@@ -775,6 +777,18 @@
     [(var-binding site _) site]
     [(macro-binding site _ _) site]
     [(keyword-binding _) #f]))
+
+;; record-binding-site! : Identifier -> Void
+;; Ensures the binding site's span is registered in the references table.
+;; This allows goto-definition to recognize the identifier as a binder
+;; even when it has no references.
+(define (record-binding-site! id)
+  (define spn (stx-span id))
+  (define state (current-expander-state))
+  (when (and spn state)
+    (define references (expander-state-references state))
+    (unless (hash-has-key? references spn)
+      (hash-set! references spn '()))))
 
 ;; record-all-stx! : Syntax -> Void
 ;; Records all surface syntax nodes in the span->stx table.
