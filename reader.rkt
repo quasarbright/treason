@@ -7,12 +7,25 @@
 (provide (all-defined-out))
 (require "stx.rkt")
 
+;; ============================================================
+;; Parse Error Type
+;; ============================================================
+
+;; An exn:fail:parse is a parse error with a source span.
+;; span : (or/c Span #f) — location in source where the error occurred
+(struct exn:fail:parse exn:fail [span] #:transparent)
+
 ;; Parser state: source, text, and mutable position tracking
 (struct pstate [source text pos line col] #:mutable #:transparent)
 
 ;; parameter? pstate?
 ;; Current parser state, mutated during parsing.
 (define current-pstate (make-parameter #f))
+
+;; string? (or/c Span #f) -> (raises exn:fail:parse)
+;; Raises a parse error with the given message and source span.
+(define (parse-error! msg sp)
+  (raise (exn:fail:parse msg (current-continuation-marks) sp)))
 
 ;; any/c string? -> stx?
 ;; Parses text as an s-expression and returns a stx structure.
@@ -133,7 +146,9 @@
     (skip-whitespace!)
     (cond
       [(at-end?)
-       (error 'parse "unexpected end of input in list")]
+       (parse-error! "unexpected end of input in list"
+                     (span (loc (source) start-line start-col)
+                           (loc (source) (line) (col))))]
       [(char=? (current-char) close-char)
        ;; End of list
        (advance!)
@@ -159,7 +174,9 @@
              (skip-whitespace!)
              (unless (and (not (at-end?))
                           (char=? (current-char) close-char))
-               (error 'parse "expected ~a after dotted tail" close-char))
+               (parse-error! (format "expected ~a after dotted tail" close-char)
+                             (span (loc (source) start-line start-col)
+                                   (loc (source) (line) (col)))))
              (advance!)  ; skip closing paren
              (define sp (span (loc (source) start-line start-col)
                               (loc (source) (line) (col))))
@@ -220,7 +237,9 @@
   
   (cond
     [(>= (add1 (pos)) (string-length (text)))
-     (error 'parse "unexpected end of input after #")]
+     (parse-error! "unexpected end of input after #"
+                   (span (loc (source) start-line start-col)
+                         (loc (source) (line) (col))))]
     [else
      (define next-ch (string-ref (text) (add1 (pos))))
      (cond
@@ -240,7 +259,9 @@
         ;; Parse #%identifier (e.g., #%expression)
         (parse-atom)]
        [else
-        (error 'parse "unsupported # form")])]))
+        (parse-error! (format "unsupported # form: #~a" next-ch)
+                      (span (loc (source) start-line start-col)
+                            (loc (source) (line) (col))))])]))
 ;; -> stx?
 ;; Parses 'expr as (quote expr).
 (define (parse-quote)

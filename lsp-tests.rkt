@@ -975,6 +975,29 @@
    (check-equal?
     (autocomplete source (hash 'line 0 'character 34))
     (list (hasheq 'label "x"))))
+
+  ;; 16. Parse error produces a diagnostic, not a crash
+  (test-case
+   "error: parse error produces diagnostic"
+   ;; Unclosed paren is a parse error — the LS should publish an error-severity
+   ;; diagnostic with a message about unexpected end of input.
+   (define client (new capturing-client%))
+   (define server (new server% [client client]))
+   (send server initialize (hasheq))
+   ;; Opening a document with a parse error should not raise
+   (check-not-exn
+    (lambda ()
+      (send server textDocument/didOpen
+            (hasheq 'textDocument (hasheq 'uri test-uri 'text "(let ([x 1])")))))
+   (define diags (send client get-diagnostics))
+   ;; At least one diagnostic must be error-severity
+   (check-true (for/or ([d diags])
+                 (= (hash-ref d 'severity 0) 1))
+               "expected at least one error-severity diagnostic")
+   ;; The error message should mention unexpected end of input
+   (check-true (for/or ([d diags])
+                 (regexp-match? #rx"unexpected end of input" (hash-ref d 'message "")))
+               "expected diagnostic message to mention unexpected end of input"))
   )
 
 ;; ============================================================

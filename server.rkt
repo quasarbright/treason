@@ -163,14 +163,21 @@ do we want actual types instead of json?
     
     ;; analyze-and-store! : String String -> Void
     ;; Parses source text, runs the expander, stores the result, and pushes diagnostics.
+    ;; If parsing fails, publishes the parse error as a diagnostic and skips expansion.
+    ;; On parse error, the previous result for the URI is preserved.
     (define/private (analyze-and-store! uri text)
-      (define syn (string->stx uri text))
-      (define result (analyze! syn))
-      (hash-set! results uri result)
-      (define diagnostics (map stx-error->diagnostic (expander-result-errors result)))
-      (send client textDocument/publishDiagnostics 
-            (hasheq 'uri uri
-                    'diagnostics diagnostics)))
+      (with-handlers ([exn:fail:parse?
+                       (lambda (err)
+                         (send client textDocument/publishDiagnostics
+                               (hasheq 'uri uri
+                                       'diagnostics (list (parse-error->diagnostic err)))))])
+        (define syn (string->stx uri text))
+        (define result (analyze! syn))
+        (hash-set! results uri result)
+        (define diagnostics (map stx-error->diagnostic (expander-result-errors result)))
+        (send client textDocument/publishDiagnostics
+              (hasheq 'uri uri
+                      'diagnostics diagnostics))))
 
     (define/public (textDocument/didChange parameters)
       (match parameters
@@ -425,10 +432,25 @@ do we want actual types instead of json?
 
 ;; stx-error? -> hasheq?
 (define (stx-error->diagnostic err)
-  (hasheq 'range (span->range ( stx-error-span err))
+  (hasheq 'range (span->range (stx-error-span err))
           'severity DiagnosticSeverity/Error
           'source "treason"
           'message (stx-error-diagnostic-message err)))
+
+;; exn:fail:parse? -> hasheq?
+;; Converts a parse error exception to an LSP diagnostic.
+;; Uses the error's span if available, otherwise falls back to the start of the file.
+(define (parse-error->diagnostic err)
+  (define sp (exn:fail:parse-span err))
+  (define range
+    (if sp
+        (span->range sp)
+        (hash 'start (hash 'line 0 'character 0)
+              'end   (hash 'line 0 'character 0))))
+  (hasheq 'range range
+          'severity DiagnosticSeverity/Error
+          'source "treason"
+          'message (exn-message err)))
 
 ;; stx-error? -> string?
 (define (stx-error-diagnostic-message err)
