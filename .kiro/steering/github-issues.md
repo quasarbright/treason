@@ -13,7 +13,6 @@ Repo: quasarbright/treason
 gh issue list                          # List open issues
 gh issue view <number>                 # View issue details
 gh issue create --title "..." --body "..." --label "P1,task"
-gh issue close <number>               # Close an issue
 gh issue edit <number> --body "..."   # Edit issue body
 gh issue comment <number> --body "..."  # Add a comment
 ```
@@ -61,5 +60,5 @@ When creating issues, include these markdown sections as applicable:
 
 1. **File issues for remaining work** — `gh issue create --title "..." --body "..." --label "P2,task"`
 2. **Run quality gates** (if code changed) — Tests, linters, builds
-3. **Update issue status** — `gh issue close <number>` for finished work
+3. **Update issue status** — stage your changes and commit with a descriptive message, and closing the issue in the message body. ex: `git add file1 file2 && git commit -m "fixed the table rendering bug" -m "fixes #12"`
 4. **Hand off** — Provide context for next session
