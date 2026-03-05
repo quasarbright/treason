@@ -93,25 +93,25 @@
 ;; Collects all atom (leaf) stx nodes from a syntax tree.
 (define (collect-atoms syn)
   (match syn
-    [(stx (? list? elems) _ _ _)
+    [(stx (? list? elems) _ _)
      (append-map collect-atoms elems)]
-    [(stx (? pair? p) _ _ _)
+    [(stx (? pair? p) _ _)
      (append (collect-atoms (car p)) (collect-atoms (cdr p)))]
-    [(stx '() _ _ _) '()]
-    [(stx _ _ _ _)
+    [(stx '() _ _) '()]
+    [(stx _ _ _)
      (list syn)]))
 
 ;; collect-lists : Stx -> (Listof Stx)
 ;; Collects all list-level stx nodes that have a span.
 (define (collect-lists syn)
   (match syn
-    [(stx (? list? elems) _ (? span?) _)
+    [(stx (? list? elems) (? span?) _)
      (cons syn (append-map collect-lists elems))]
-    [(stx (? list? elems) _ _ _)
+    [(stx (? list? elems) _ _)
      (append-map collect-lists elems)]
-    [(stx (? pair? p) _ (? span?) _)
+    [(stx (? pair? p) (? span?) _)
      (cons syn (append (collect-lists (car p)) (collect-lists (cdr p))))]
-    [(stx (? pair? p) _ _ _)
+    [(stx (? pair? p) _ _)
      (append (collect-lists (car p)) (collect-lists (cdr p)))]
     [_ '()]))
 

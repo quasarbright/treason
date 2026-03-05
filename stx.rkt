@@ -4,18 +4,13 @@
 
 (provide (all-defined-out))
 
-;; A Surface_Node_ID is a Natural.
-;; Unique identifier for surface syntax nodes, assigned during parsing.
-;; Macro-introduced nodes have #f instead.
-
 ;; A Mark is a Symbol created by gensym.
 ;; Marks distinguish identifiers introduced at different macro expansion sites.
 
 ;; A Stx is a
-(struct stx [e id span marks] #:transparent)
+(struct stx [e span marks] #:transparent)
 ;; where
 ;; e is a StxE
-;; id is a (or/c Natural #f) - Surface_Node_ID, #f for macro-introduced
 ;; span is a Span (or #f)
 ;; marks is a (Listof Mark) - hygiene marks (most recent first)
 ;; Represents concrete syntax of a program
@@ -37,7 +32,6 @@
 (define (identifier? x) (and (stx? x) (symbol? (stx-e x))))
 (define (identifier-symbol id) (stx-e id))
 (define (identifier-marks id) (stx-marks id))
-(define (identifier-id id) (stx-id id))
 (define (identifier-span id) (stx-span id))
 
 ;; A Span is a
@@ -63,8 +57,8 @@
 ;; Gets the first element of a stx list or pair.
 (define (stx-car syn)
   (match syn
-    [(stx (cons a _) _ _ _) a]
-    [(stx (list a _ ...) _ _ _) a]))
+    [(stx (cons a _) _ _) a]
+    [(stx (list a _ ...) _ _) a]))
 
 ;; stx-cdr : Stx -> Stx or (Listof Stx)
 ;; Gets the rest of a stx list or pair.
@@ -72,14 +66,14 @@
 ;; For a dotted pair, returns the cdr stx.
 (define (stx-cdr syn)
   (match syn
-    [(stx (cons _ d) _ _ _) d]
-    [(stx (list _ rest ...) id spn marks) (stx rest id spn marks)]))
+    [(stx (cons _ d) _ _) d]
+    [(stx (list _ rest ...) spn marks) (stx rest spn marks)]))
 
 ;; stx-list : Stx -> (Listof Stx)
 ;; Converts a stx list to a Racket list.
 (define (stx-list syn)
   (match syn
-    [(stx (? list? elems) _ _ _) elems]))
+    [(stx (? list? elems) _ _) elems]))
 
 ;; ============================================================
 ;; Errors

@@ -35,7 +35,7 @@
          [(datum ...)
           ;; Convert list pattern to list pattern wrapped in stx
           (let ([datum-pats (map loop (attribute datum))])
-            #`(stx (list #,@datum-pats) _ _ _))]
+            #`(stx (list #,@datum-pats) _ _))]
          [atom #'(? (stx-eq-to-datum? 'atom))]))])
   (syntax-parser
     ;; TODO unquote
@@ -66,8 +66,8 @@
     (check-equal? (stx->datum app) '(m x))
     (check-equal? (stx->datum rebuilt) '(f y))
     (match* (app rebuilt)
-      [((stx (list (stx 'm _ m-span _) (stx 'x _ _x-span _)) _ app-span _) 
-        (stx (list (stx 'f _ f-span _) (stx 'y _ y-span _)) _ rebuilt-span _))
+      [((stx (list (stx 'm m-span _) (stx 'x _x-span _)) app-span _) 
+        (stx (list (stx 'f f-span _) (stx 'y y-span _)) rebuilt-span _))
        ; literal template inherits from original
        (check-equal? f-span m-span)
        ; unquoted stx does not inherit
@@ -85,16 +85,16 @@
     [(_ (? (lambda (e) (or (stx? e) (not (or (pair? e) (list? e) (stx-e? e)))))))
      ;; either unquoted stx or something like a stx-error
      e]
-    [((stx (? list? syn-elems) id spn marks) (? list? e-elems))
+    [((stx (? list? syn-elems) spn marks) (? list? e-elems))
      ;; Both are proper lists - rebuild element-wise
-     (stx (map stx-rebuild/proc syn-elems e-elems) id spn marks)]
-    [((stx (? pair? syn-pair) id spn marks) (? pair? e-pair))
+     (stx (map stx-rebuild/proc syn-elems e-elems) spn marks)]
+    [((stx (? pair? syn-pair) spn marks) (? pair? e-pair))
      ;; Both are cons pairs (dotted) - rebuild recursively
      (define car-rebuilt (stx-rebuild/proc (car syn-pair) (car e-pair)))
      (define cdr-rebuilt (stx-rebuild/proc (cdr syn-pair) (cdr e-pair)))
-     (stx (cons car-rebuilt cdr-rebuilt) id spn marks)]
-    [((stx _old-atom id spn marks) new-atom)
-     (stx new-atom id spn marks)]))
+     (stx (cons car-rebuilt cdr-rebuilt) spn marks)]
+    [((stx _old-atom spn marks) new-atom)
+     (stx new-atom spn marks)]))
 
 ;; any/c -> (stx? -> boolean?)
 (define ((stx-eq-to-datum? datum) syn)
@@ -143,6 +143,5 @@
          (loop (add1 p) (add1 l) 0)]
         [else
          (loop (add1 p) l (add1 c))])))
-  (parameterize ([current-id 0]
-                 [current-pstate (pstate src txt p target-line target-col)])
+  (parameterize ([current-pstate (pstate src txt p target-line target-col)])
     (parse)))

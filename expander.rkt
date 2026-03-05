@@ -112,10 +112,10 @@
 ;; ------------------------------------------------------------
 
 ;; An ExpanderState is a (expander-state Hash Hash Hash)
-(struct expander-state [id->stx resolutions references] #:transparent)
-;; id->stx : [MutableHashOf NodeId Stx] - maps surface node ID to its Stx object
-;; resolutions : [MutableHashOf NodeId [Listof Resolution]] - maps ref ID to resolutions
-;; references : [MutableHashOf NodeId [Listof NodeId]] - maps def ID to ref IDs
+(struct expander-state [span->stx resolutions references] #:transparent)
+;; span->stx : [MutableHashOf Span Stx] - maps surface span to its Stx object
+;; resolutions : [MutableHashOf Span [Listof Resolution]] - maps ref span to resolutions
+;; references : [MutableHashOf Span [Listof Span]] - maps def span to ref spans
 
 ;; A Resolution is a (resolution Binding-or-#f Stx Scope)
 (struct resolution [binding ref-stx scp] #:transparent)
@@ -209,8 +209,7 @@
 ;; Legacy entry point for compatibility with existing tests.
 ;; Converts s-expression to syntax, expands, and returns expanded s-expression.
 (define (expand e)
-  (parameterize ([gensym-ctr 0]
-                 [current-id 0])
+  (parameterize ([gensym-ctr 0])
     (syntax->sexpr (expand-expr (sexpr->syntax e) initial-scope))))
 
 ;; ============================================================
@@ -221,7 +220,7 @@
 ;; Expands an expression in the given scope, producing an expanded s-expression.
 (define (expand-expr expr scp)
   (match expr
-    [(stx (? number? n) _ _ _) n]
+    [(stx (? number? n) _ _) n]
     [(? identifier? id)
      (define binding (scope-resolve scp id))
      (cond
@@ -229,7 +228,7 @@
        [(keyword-binding? binding) (identifier-symbol id)]
        [(unbound? binding) (stx-error 'expand "unbound identifier" expr #f)]
        [else (stx-error 'expand-expr "unexpected binding type" expr #f)])]
-    [(stx (list* head-stx _) _ _ _)
+    [(stx (list* head-stx _) _ _)
      #:when (identifier? head-stx)
      (define binding (scope-resolve scp head-stx))
      (cond
@@ -287,7 +286,7 @@
         (stx-error 'expand "not a procedure or syntax" expr head-stx)]
        [else (stx-error 'expand-expr "unexpected form: ~a" expr head-stx)])]
     ;; Non-identifier in head position or other forms
-    [(stx (list* _ _) _ _ _)
+    [(stx (list* _ _) _ _)
      (stx-error 'expand "bad syntax" expr #f)]))
 
 ;; ============================================================
@@ -315,7 +314,7 @@
 ;; First pass of definition expansion: discovers bindings and expands macros.
 (define (expand-def-pass1 def scp)
   (match def
-    [(stx (list* head-stx _) _ _ _)
+    [(stx (list* head-stx _) _ _)
      #:when (identifier? head-stx)
      (define binding (scope-resolve scp head-stx))
      (cond
@@ -408,12 +407,7 @@
   (define use-proj (project-use tmpl penv))
   (define marked-def (mark-syntax def-proj def-mark))
   (define marked-use (mark-syntax use-proj use-mark))
-  (define marked-stx (combine-projections marked-def marked-use))
-  ;; Set use-site span on outermost result if it came from template
-  (define use-site-span (and (stx? expr) (stx-span expr)))
-  (define final-stx (if use-site-span
-                        (maybe-set-use-site-span marked-stx def-mark use-site-span)
-                        marked-stx))
+  (define final-stx (combine-projections marked-def marked-use))
   ;; Create disjoin scope
   (define introduced-defn-scp (new-scope def-scp))
   (define disjoined-scp (disjoin def-mark introduced-defn-scp
@@ -438,24 +432,24 @@
 ;; project-def : Syntax PatternEnv -> Projection
 ;; Creates the definition-site projection of a template.
 ;; Pattern variable positions become '_.
-;; We preserve surface ids on macro-introduced syntax.
+;; We preserve surface spans on macro-introduced syntax.
 (define (project-def tmpl penv)
   (match tmpl
-    [(stx e node-id spn marks)
+    [(stx e spn marks)
      (cond
        [(and (identifier? tmpl) (hash-has-key? penv (identifier->key tmpl)))
         '_]  ; will be filled by use-site syntax
        [(list? e)
         (stx (map (lambda (t) (project-def t penv)) e)
-             node-id spn marks)]
+             spn marks)]
        [(pair? e)
         (stx (cons (project-def (car e) penv)
                    (project-def (cdr e) penv))
-             node-id spn marks)]
+             spn marks)]
        [(identifier? tmpl)
-        (stx e node-id spn marks)]
+        (stx e spn marks)]
        [else
-        (stx e node-id spn marks)])]
+        (stx e spn marks)])]
     [_ tmpl]))  ; numbers pass through
 
 ;; project-use : Syntax PatternEnv -> Projection
@@ -463,7 +457,7 @@
 ;; Pattern variables are replaced with their matched syntax.
 (define (project-use tmpl penv)
   (match tmpl
-    [(stx e _ _ _)
+    [(stx e _ _)
      (cond
        [(and (identifier? tmpl) (hash-has-key? penv (identifier->key tmpl)))
         (hash-ref penv (identifier->key tmpl))]
@@ -480,38 +474,28 @@
 ;; '_ in one projection is filled by the corresponding part of the other.
 (define (combine-projections proj1 proj2)
   (match* (proj1 proj2)
-    [('_ proj2) proj2]  ; use-site syntax keeps its ID and span
-    [(proj1 '_) proj1]  ; template syntax has id=#f
+    [('_ proj2) proj2]  ; use-site syntax keeps its span
+    [(proj1 '_) proj1]  ; template syntax has span from template
     [(same same) same]
     ;; stx list + plain list (from project-use)
-    [((stx (? list? p1elems) id1 spn1 marks1) (? list? p2elems))
-     (stx (map combine-projections p1elems p2elems) id1 spn1 marks1)]
-    [((? list? p1elems) (stx (? list? p2elems) id2 spn2 marks2))
-     (stx (map combine-projections p1elems p2elems) id2 spn2 marks2)]
+    [((stx (? list? p1elems) spn1 marks1) (? list? p2elems))
+     (stx (map combine-projections p1elems p2elems) spn1 marks1)]
+    [((? list? p1elems) (stx (? list? p2elems) spn2 marks2))
+     (stx (map combine-projections p1elems p2elems) spn2 marks2)]
     [((? list? p1elems) (? list? p2elems))
      (map combine-projections p1elems p2elems)]
     ;; cons pairs (dotted)
-    [((stx (cons p1a p1d) id1 spn1 marks1) (cons p2a p2d))
+    [((stx (cons p1a p1d) spn1 marks1) (cons p2a p2d))
      (stx (cons (combine-projections p1a p2a)
                 (combine-projections p1d p2d))
-          id1 spn1 marks1)]
-    [((cons p1a p1d) (stx (cons p2a p2d) id2 spn2 marks2))
+          spn1 marks1)]
+    [((cons p1a p1d) (stx (cons p2a p2d) spn2 marks2))
      (stx (cons (combine-projections p1a p2a)
                 (combine-projections p1d p2d))
-          id2 spn2 marks2)]
+          spn2 marks2)]
     [((cons p1a p1d) (cons p2a p2d))
      (cons (combine-projections p1a p2a)
            (combine-projections p1d p2d))]))
-
-;; maybe-set-use-site-span : Syntax Mark Span -> Syntax
-;; If the outermost result has the def-site mark, it came from the template
-;; and should get the use-site span for error reporting.
-(define (maybe-set-use-site-span result def-mark use-site-span)
-  (match result
-    [(stx e id _ (cons (== def-mark) rest-marks))
-     ;; Has def-site mark: came from template, use the use-site span
-     (stx e id use-site-span (cons def-mark rest-marks))]
-    [_ result]))  ; has use-site mark or other: keep existing span
 
 ;; ============================================================
 ;; Syntax-Rules Matching
@@ -553,9 +537,9 @@
 ;; Returns a PatternEnv on success, #f on failure.
 (define (match-top-pattern pat expr is-literal? literal-match?)
   (match* (pat expr)
-    [((stx (list _ pd ...) _ _ _) (stx (list _ ed ...) _ _ _))
+    [((stx (list _ pd ...) _ _) (stx (list _ ed ...) _ _))
      (match-pattern-list pd ed is-literal? literal-match?)]
-    [((stx (cons _ pd) _ _ _) (stx (cons _ ed) _ _ _))
+    [((stx (cons _ pd) _ _) (stx (cons _ ed) _ _))
      (match-pattern pd ed is-literal? literal-match?)]
     [(_ _) #f]))
 
@@ -587,14 +571,14 @@
      #:when (not (is-literal? pvar))
      (hash (identifier->key pvar) syn)]
     ;; datum literal: must be equal
-    [((stx (? number? v1) _ _ _) (stx (? number? v2) _ _ _))
+    [((stx (? number? v1) _ _) (stx (? number? v2) _ _))
      #:when (= v1 v2)
      (hash)]
     ;; list: match element-wise
-    [((stx (? list? pelems) _ _ _) (stx (? list? eelems) _ _ _))
+    [((stx (? list? pelems) _ _) (stx (? list? eelems) _ _))
      (match-pattern-list pelems eelems is-literal? literal-match?)]
     ;; cons (dotted pair): match both parts and combine environments
-    [((stx (cons pa pd) _ _ _) (stx (cons ea ed) _ _ _))
+    [((stx (cons pa pd) _ _) (stx (cons ea ed) _ _))
      (let ([resa (match-pattern pa ea is-literal? literal-match?)])
        (and resa
             (let ([resd (match-pattern pd ed is-literal? literal-match?)])
@@ -681,17 +665,17 @@
 ;; ============================================================
 
 ;; mark-syntax : Syntax Mark -> Syntax
-;; Recursively marks all identifiers in a syntax object, preserving id/span.
+;; Recursively marks all identifiers in a syntax object, preserving span.
 ;; Also handles projections which may be plain conses.
 (define (mark-syntax syn mark)
   (match syn
-    [(stx e node-id spn marks)
+    [(stx e spn marks)
      (stx (cond
             [(list? e) (map (lambda (s) (mark-syntax s mark)) e)]
             [(pair? e) (cons (mark-syntax (car e) mark)
                             (mark-syntax (cdr e) mark))]
             [else e])
-          node-id spn (cons mark marks))]
+          spn (cons mark marks))]
     [(cons a d)
      ;; Handle plain cons (from projections)
      (cons (mark-syntax a mark) (mark-syntax d mark))]
@@ -704,7 +688,7 @@
 ;; Returns #t if the identifier's top mark equals the given mark.
 (define (top-mark=? id mark)
   (match id
-    [(stx _ _ _ (cons (== mark) _)) #t]
+    [(stx _ _ (cons (== mark) _)) #t]
     [_ #f]))
 
 ;; drop-top-mark : Identifier -> Identifier
@@ -712,8 +696,8 @@
 ;; Precondition: The identifier has at least one mark.
 (define (drop-top-mark id)
   (match id
-    [(stx e node-id spn (cons _ marks-rest))
-     (stx e node-id spn marks-rest)]))
+    [(stx e spn (cons _ marks-rest))
+     (stx e spn marks-rest)]))
 
 ;; bound-identifier=? : Identifier Identifier -> Boolean
 ;; Returns #t if two identifiers have the same symbol and marks.
@@ -751,7 +735,7 @@
 ;; make-expander-state : -> ExpanderState
 ;; Creates a fresh expander state with empty tables.
 (define (make-expander-state)
-  (expander-state (make-hasheq) (make-hasheq) (make-hasheq)))
+  (expander-state (make-hash) (make-hash) (make-hash)))
 
 ;; hash-cons! : MutableHash Key Value -> Void
 ;; Appends a value to the list stored at key (multi-valued hash).
@@ -759,30 +743,30 @@
   (hash-set! ht key (cons val (hash-ref ht key '()))))
 
 ;; record-stx! : Stx -> Void
-;; Records a surface syntax node in the id->stx table.
+;; Records a surface syntax node in the span->stx table.
 (define (record-stx! stx)
-  (define id (stx-id stx))
+  (define spn (stx-span stx))
   (define state (current-expander-state))
-  (when (and id state)
-    (hash-set! (expander-state-id->stx state) id stx)))
+  (when (and spn state)
+    (hash-set! (expander-state-span->stx state) spn stx)))
 
 ;; record-resolution! : Stx Binding-or-#f Scope -> Void
 ;; Records a resolution in the tables.
 ;; - Adds to resolutions table for goto-definition and autocomplete
 ;; - Adds to references table for find-references (if binding has surface site)
 (define (record-resolution! ref-stx binding scp)
-  (define ref-id (stx-id ref-stx))
+  (define ref-spn (stx-span ref-stx))
   (define state (current-expander-state))
   ;; TODO if state is #f, we should error instead of silently failing
-  (when (and ref-id state)
+  (when (and ref-spn state)
     ;; Record the resolution
-    (hash-cons! (expander-state-resolutions state) ref-id
+    (hash-cons! (expander-state-resolutions state) ref-spn
                 (resolution binding ref-stx scp))
     ;; If binding has a surface site, record in references table
     (define site (and binding (binding-site binding)))
-    (define def-id (and site (stx-id site)))
-    (when def-id
-      (hash-cons! (expander-state-references state) def-id ref-id))))
+    (define def-spn (and site (stx-span site)))
+    (when def-spn
+      (hash-cons! (expander-state-references state) def-spn ref-spn))))
 
 ;; binding-site : Binding -> (or/c Identifier #f)
 ;; Extract the binding site identifier from a binding.
@@ -793,12 +777,12 @@
     [(keyword-binding _) #f]))
 
 ;; record-all-stx! : Syntax -> Void
-;; Records all surface syntax nodes in the id->stx table.
+;; Records all surface syntax nodes in the span->stx table.
 (define (record-all-stx! root-stx)
   (let loop ([syn root-stx])
     (match syn
-      [(stx e id _spn _marks)
-       (when id (record-stx! syn))
+      [(stx e spn _marks)
+       (when spn (record-stx! syn))
        (cond
          [(list? e) (for-each loop e)]
          [(pair? e) (loop (car e)) (loop (cdr e))])]
@@ -810,7 +794,7 @@
   (let loop ([syn expanded] [acc '()])
     (match syn
       [(? stx-error? err) (cons err acc)]
-      [(stx e _ _ _)
+      [(stx e _ _)
        (cond
          [(list? e) (foldl (lambda (s a) (loop s a)) acc e)]
          [(pair? e) (loop (cdr e) (loop (car e) acc))]
@@ -825,18 +809,18 @@
 ;; get-binding-sites-of : ExpanderResult Stx -> (Listof Stx)
 ;; Given a reference site, returns the binding sites it resolves to.
 ;; Filters out #f results (core keywords have no binding site).
-;; Returns empty list if the node has no Surface_Node_ID or no recorded resolutions.
+;; Returns empty list if the node has no span or no recorded resolutions.
 (define (get-binding-sites-of result ref-stx)
-  (define ref-id (stx-id ref-stx))
+  (define ref-spn (stx-span ref-stx))
   (define resolutions (expander-state-resolutions (expander-result-state result)))
-  (if ref-id
+  (if ref-spn
       (remove-duplicates
        (filter-map
         (lambda (res)
           (define bnd (resolution-binding res))
           (and bnd (binding-site bnd)))
-        (hash-ref resolutions ref-id '()))
-       #:key stx-id)
+        (hash-ref resolutions ref-spn '()))
+       #:key stx-span)
       '()))
 
 ;; get-reference-sites-of : ExpanderResult Stx -> (Listof Stx)
@@ -846,29 +830,29 @@
 ;; all references to those binding sites.
 ;; Includes the binding site itself (binding sites are self-references).
 (define (get-reference-sites-of result stx-node)
-  (define id (stx-id stx-node))
+  (define spn (stx-span stx-node))
   (define state (expander-result-state result))
   (define references (expander-state-references state))
-  (define id->stx (expander-state-id->stx state))
-  (if id
+  (define span->stx (expander-state-span->stx state))
+  (if spn
       ;; First check if this is a binding site (has entries in references table)
-      (let ([direct-refs (hash-ref references id '())])
+      (let ([direct-refs (hash-ref references spn '())])
         (if (not (null? direct-refs))
             ;; It's a binding site - return all references to it (deduplicated)
             (remove-duplicates
-             (for/list ([ref-id direct-refs])
-               (hash-ref id->stx ref-id))
-             #:key stx-id)
+             (for/list ([ref-spn direct-refs])
+               (hash-ref span->stx ref-spn))
+             #:key stx-span)
             ;; It's a reference site - find binding sites, then their references
             (let* ([bsites (get-binding-sites-of result stx-node)]
-                   [binding-ids (filter-map stx-id bsites)])
+                   [binding-spns (filter-map stx-span bsites)])
               (remove-duplicates
                (append-map
-                (lambda (def-id)
-                  (for/list ([ref-id (hash-ref references def-id '())])
-                    (hash-ref id->stx ref-id)))
-                binding-ids)
-               #:key stx-id))))
+                (lambda (def-spn)
+                  (for/list ([ref-spn (hash-ref references def-spn '())])
+                    (hash-ref span->stx ref-spn)))
+                binding-spns)
+               #:key stx-span))))
       '()))
 
 ;; scope->names : Scope [Listof Mark] -> (Set Symbol)
@@ -901,10 +885,10 @@
 ;; If the node was resolved under multiple scopes (macro duplication),
 ;; returns the intersection of names from all scopes.
 (define (get-names-in-scope result stx-node)
-  (define id (stx-id stx-node))
+  (define spn (stx-span stx-node))
   (define resolutions (expander-state-resolutions (expander-result-state result)))
-  (if id
-      (let ([res-list (hash-ref resolutions id '())])
+  (if spn
+      (let ([res-list (hash-ref resolutions spn '())])
         (if (null? res-list)
             (seteq)
             (apply set-intersect
@@ -919,16 +903,13 @@
 (define (get-all-surface-binding-sites result)
   (define state (expander-result-state result))
   (define references (expander-state-references state))
-  (define id->stx (expander-state-id->stx state))
-  (for/list ([def-id (in-hash-keys references)])
-    (hash-ref id->stx def-id)))
+  (define span->stx (expander-state-span->stx state))
+  (for/list ([def-spn (in-hash-keys references)])
+    (hash-ref span->stx def-spn)))
 
 ;; ============================================================
 ;; Position-Based Query Functions
 ;; ============================================================
-
-;; Reserved ID for cursor
-(define cursor-id -1)
 
 ;; find-node-at-position : ExpanderResult Loc -> (or/c Stx #f)
 ;; Given an LSP position (line+column), find the innermost surface syntax node
@@ -942,20 +923,20 @@
 (define (find-node-at-position-in root pos)
   (let loop ([syn root])
     (match syn
-      [(stx e id spn _marks)
+      [(stx e spn _marks)
        (cond
          ;; If this node has a span and contains the position, check children first
          [(and spn (span-contains? spn pos))
           (cond
             [(list? e)
              (or (ormap loop e)
-                 (and id syn))]
+                 syn)]
             [(pair? e)
              (or (loop (car e))
                  (loop (cdr e))
-                 (and id syn))]
+                 syn)]
             [else
-             (and id syn)])]
+             syn])]
          ;; No span or doesn't contain position - try children anyway
          [(list? e) (ormap loop e)]
          [(pair? e) (or (loop (car e)) (loop (cdr e)))]
@@ -992,9 +973,9 @@
     [(not node) '()]
     [else
      (define resolution-sites (filter-map stx-span (get-binding-sites-of result node)))
-     (define id (stx-id node))
-     (define is-binder? (and id (hash-has-key? (expander-state-references (expander-result-state result)) id)))
-     (define self-span (and is-binder? (stx-span node)))
+     (define spn (stx-span node))
+     (define is-binder? (and spn (hash-has-key? (expander-state-references (expander-result-state result)) spn)))
+     (define self-span (and is-binder? spn))
      (if self-span
          (remove-duplicates (cons self-span resolution-sites) equal?)
          resolution-sites)]))
@@ -1025,11 +1006,11 @@
 
 ;; make-cursor : Loc -> Stx
 ;; Creates a cursor identifier at the given position.
-;; It's a normal surface identifier with a gensym'd name and reserved ID.
+;; It's a normal surface identifier with a gensym'd name and a zero-width span.
 (define (make-cursor pos)
   (define zero-span (span pos pos))
   ;; Use Racket's built-in gensym to avoid needing gensym-ctr parameter
-  (stx (string->symbol (format "cursor~a" (random 1000000))) cursor-id zero-span '()))
+  (stx (string->symbol (format "cursor~a" (random 1000000))) zero-span '()))
 
 ;; insert-cursor-at : Stx Loc -> Stx
 ;; Inserts a cursor identifier at the given position in the syntax tree.
@@ -1037,35 +1018,33 @@
 (define (insert-cursor-at root pos cursor)
   (let loop ([syn root])
     (match syn
-      [(stx e id spn marks)
+      [(stx e spn marks)
        (cond
          ;; Empty list node - insert cursor here if position is nearby
          [(and (null? e) spn (span-contains-or-at? spn pos))
-          (stx (list cursor) id spn marks)]
+          (stx (list cursor) spn marks)]
          ;; If this is a list node and the position is inside it,
          ;; try to insert the cursor in the right place
          [(and spn (list? e) (not (null? e)) (span-contains? spn pos))
           (define new-elems (map loop e))
           (if (equal? new-elems e)
               ;; No child changed, insert cursor at the right position
-              (stx (insert-cursor-in-elems e pos cursor) id spn marks)
-              (stx new-elems id spn marks))]
+              (stx (insert-cursor-in-elems e pos cursor) spn marks)
+              (stx new-elems spn marks))]
          [(and (list? e) (not (null? e)))
           (define new-elems (map loop e))
-          (if (equal? new-elems e) syn (stx new-elems id spn marks))]
+          (if (equal? new-elems e) syn (stx new-elems spn marks))]
          ;; Dotted pair
          [(and spn (pair? e) (span-contains? spn pos))
           (define new-car (loop (car e)))
           (define new-cdr (loop (cdr e)))
-          (if (and (eq? new-car (car e)) (eq? new-cdr (cdr e)))
-              (stx (cons new-car new-cdr) id spn marks)
-              (stx (cons new-car new-cdr) id spn marks))]
+          (stx (cons new-car new-cdr) spn marks)]
          [(pair? e)
           (define new-car (loop (car e)))
           (define new-cdr (loop (cdr e)))
           (if (and (eq? new-car (car e)) (eq? new-cdr (cdr e)))
               syn
-              (stx (cons new-car new-cdr) id spn marks))]
+              (stx (cons new-car new-cdr) spn marks))]
          [else syn])]
       [_ syn])))
 

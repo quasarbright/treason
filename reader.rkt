@@ -14,15 +14,11 @@
 ;; Current parser state, mutated during parsing.
 (define current-pstate (make-parameter #f))
 
-;; Counter for assigning unique Surface_Node_IDs during parsing
-(define current-id (make-parameter 0))
-
 ;; any/c string? -> stx?
 ;; Parses text as an s-expression and returns a stx structure.
 ;; src is used for location tracking (typically a file path or symbol).
 (define (string->stx src txt)
-  (parameterize ([current-id 0]
-                 [current-pstate (pstate src txt 0 0 0)])
+  (parameterize ([current-pstate (pstate src txt 0 0 0)])
     (parse)))
 
 ;; -> (or/c stx? eof)
@@ -43,12 +39,6 @@
         (parse-quote)]
        [else
         (parse-atom)])]))
-
-;; -> natural?
-;; Returns the current ID and increments the counter.
-(define (next-id!)
-  (begin0 (current-id)
-    (current-id (add1 (current-id)))))
 
 ;; -> any/c
 ;; Returns the source identifier.
@@ -149,9 +139,8 @@
        (advance!)
        (define sp (span (loc (source) start-line start-col)
                         (loc (source) (line) (col))))
-       (define id (next-id!))
        (define e (reverse elements))
-       (stx e id sp '())]
+       (stx e sp '())]
       [(char=? (current-char) #\.)
        ;; Check if this is a dot for improper list
        (define next-pos (add1 (pos)))
@@ -174,9 +163,8 @@
              (advance!)  ; skip closing paren
              (define sp (span (loc (source) start-line start-col)
                               (loc (source) (line) (col))))
-             (define id (next-id!))
              (define e (build-improper-list-stx (reverse elements) tail-stx))
-             (stx e id sp '()))
+             (stx e sp '()))
            ;; It's an atom starting with dot
            (loop (cons (parse-atom) elements)))]
       [else
@@ -222,8 +210,7 @@
         (string->symbol atom-str)))
   (define sp (span (loc (source) start-line start-col)
                    (loc (source) (line) (col))))
-  (define id (next-id!))
-  (stx atom-val id sp '()))
+  (stx atom-val sp '()))
 
 ;; -> stx?
 ;; Parses #t, #f, or other # forms.
@@ -242,21 +229,18 @@
         (advance!)  ; skip t
         (define sp (span (loc (source) start-line start-col)
                          (loc (source) (line) (col))))
-        (define id (next-id!))
-        (stx #t id sp '())]
+        (stx #t sp '())]
        [(char=? next-ch #\f)
         (advance!)  ; skip #
         (advance!)  ; skip f
         (define sp (span (loc (source) start-line start-col)
                          (loc (source) (line) (col))))
-        (define id (next-id!))
-        (stx #f id sp '())]
+        (stx #f sp '())]
        [(char=? next-ch #\%)
         ;; Parse #%identifier (e.g., #%expression)
         (parse-atom)]
        [else
         (error 'parse "unsupported # form")])]))
-
 ;; -> stx?
 ;; Parses 'expr as (quote expr).
 (define (parse-quote)
@@ -269,13 +253,12 @@
   (define inner (parse))
   (define sp (span (loc (source) start-line start-col)
                    (loc (source) (line) (col))))
-  (define id (next-id!))
-  (define quote-sym (stx 'quote (next-id!) 
+  (define quote-sym (stx 'quote
                          (span (loc (source) start-line start-col)
                                (loc (source) start-line (add1 start-col)))
                          '()))
   (define e (list quote-sym inner))
-  (stx e id sp '()))
+  (stx e sp '()))
 
 ;; ============================================================
 ;; S-Expression Conversion
@@ -283,37 +266,37 @@
 
 ;; sexpr->syntax : SExpression -> Stx
 ;; Converts a plain s-expression to syntax.
-;; Assigns unique IDs to each node for LSP tracking.
+;; All nodes get #f span (macro-introduced, no source location).
 ;; Proper lists become (stx (list ...)), dotted pairs become (stx (cons ...)).
 (define (sexpr->syntax s)
   (match s
     [(? list? elems)
-     (stx (map sexpr->syntax elems) (next-id!) #f '())]
+     (stx (map sexpr->syntax elems) #f '())]
     [(cons a d)
      ;; Improper list / dotted pair
      (stx (let loop ([s s])
             (match s
               [(cons a (? pair? d)) (cons (sexpr->syntax a) (loop d))]
               [(cons a d) (cons (sexpr->syntax a) (sexpr->syntax d))]))
-          (next-id!) #f '())]
+          #f '())]
     ['_ '_]
-    [(? symbol? s) (stx s (next-id!) #f '())]
-    [(? number? n) (stx n (next-id!) #f '())]
+    [(? symbol? s) (stx s #f '())]
+    [(? number? n) (stx n #f '())]
     [_ s]))
 
 ;; syntax->sexpr : Stx -> SExpression
 ;; Converts syntax back to a plain s-expression.
 (define (syntax->sexpr syn)
   (match syn
-    [(stx (? list? elems) _ _ _)
+    [(stx (? list? elems) _ _)
      (map syntax->sexpr elems)]
-    [(stx (cons a d) _ _ _)
+    [(stx (cons a d) _ _)
      ;; Improper list / dotted pair
      (let loop ([e (stx-e syn)])
        (match e
          [(cons a (? pair? d)) (cons (syntax->sexpr a) (loop d))]
          [(cons a d) (cons (syntax->sexpr a) (syntax->sexpr d))]))]
-    [(stx e _ _ _)
+    [(stx e _ _)
      (cond
        [(symbol? e) e]
        [else e])]
@@ -333,64 +316,63 @@
   ;; Test simple symbol
   (check-stx-equal?
    (string->stx 'test "x")
-   (stx 'x _ (span (loc 'test 0 0) (loc 'test 0 1)) '()))
+   (stx 'x (span (loc 'test 0 0) (loc 'test 0 1)) '()))
   
   ;; Test simple list (as flat Racket list of stx elements)
   (check-stx-equal?
    (string->stx 'test "(+ 1 2)")
-   (stx (list (stx '+ _ (span (loc 'test 0 1) (loc 'test 0 2)) '())
-              (stx 1 _ (span (loc 'test 0 3) (loc 'test 0 4)) '())
-              (stx 2 _ (span (loc 'test 0 5) (loc 'test 0 6)) '()))
-        _ (span (loc 'test 0 0) (loc 'test 0 7)) '()))
+   (stx (list (stx '+ (span (loc 'test 0 1) (loc 'test 0 2)) '())
+              (stx 1 (span (loc 'test 0 3) (loc 'test 0 4)) '())
+              (stx 2 (span (loc 'test 0 5) (loc 'test 0 6)) '()))
+        (span (loc 'test 0 0) (loc 'test 0 7)) '()))
   
   ;; Test dotted pair (improper list)
   (check-stx-equal?
    (string->stx "test.tsn" "(foo . bar)")
-   (stx (cons (stx 'foo _ (span (loc "test.tsn" 0 1) (loc "test.tsn" 0 4)) '())
-              (stx 'bar _ (span (loc "test.tsn" 0 7) (loc "test.tsn" 0 10)) '()))
-        _ (span (loc "test.tsn" 0 0) (loc "test.tsn" 0 11)) '()))
+   (stx (cons (stx 'foo (span (loc "test.tsn" 0 1) (loc "test.tsn" 0 4)) '())
+              (stx 'bar (span (loc "test.tsn" 0 7) (loc "test.tsn" 0 10)) '()))
+        (span (loc "test.tsn" 0 0) (loc "test.tsn" 0 11)) '()))
   
   ;; Test empty list
   (check-stx-equal?
    (string->stx 'test "()")
-   (stx '() _ (span (loc 'test 0 0) (loc 'test 0 2)) '()))
+   (stx '() (span (loc 'test 0 0) (loc 'test 0 2)) '()))
 
   ;; Test eof
   (check-equal?
-   (parameterize ([current-id 0]
-                  [current-pstate (pstate 'test "" 0 0 0)])
+   (parameterize ([current-pstate (pstate 'test "" 0 0 0)])
      (parse))
    eof)
   
   ;; Test nested list
   (check-stx-equal?
    (string->stx 'test "(a (b c))")
-   (stx (list (stx 'a _ (span (loc 'test 0 1) (loc 'test 0 2)) '())
-              (stx (list (stx 'b _ (span (loc 'test 0 4) (loc 'test 0 5)) '())
-                         (stx 'c _ (span (loc 'test 0 6) (loc 'test 0 7)) '()))
-                   _ (span (loc 'test 0 3) (loc 'test 0 8)) '()))
-        _ (span (loc 'test 0 0) (loc 'test 0 9)) '()))
+   (stx (list (stx 'a (span (loc 'test 0 1) (loc 'test 0 2)) '())
+              (stx (list (stx 'b (span (loc 'test 0 4) (loc 'test 0 5)) '())
+                         (stx 'c (span (loc 'test 0 6) (loc 'test 0 7)) '()))
+                   (span (loc 'test 0 3) (loc 'test 0 8)) '()))
+        (span (loc 'test 0 0) (loc 'test 0 9)) '()))
   
   ;; Test booleans
   (check-stx-equal?
    (string->stx 'test "(#t #f)")
-   (stx (list (stx #t _ (span (loc 'test 0 1) (loc 'test 0 3)) '())
-              (stx #f _ (span (loc 'test 0 4) (loc 'test 0 6)) '()))
-        _ (span (loc 'test 0 0) (loc 'test 0 7)) '()))
+   (stx (list (stx #t (span (loc 'test 0 1) (loc 'test 0 3)) '())
+              (stx #f (span (loc 'test 0 4) (loc 'test 0 6)) '()))
+        (span (loc 'test 0 0) (loc 'test 0 7)) '()))
   
   ;; Test multiline
   (check-stx-equal?
    (string->stx 'test "(a\nb)")
-   (stx (list (stx 'a _ (span (loc 'test 0 1) (loc 'test 0 2)) '())
-              (stx 'b _ (span (loc 'test 1 0) (loc 'test 1 1)) '()))
-        _ (span (loc 'test 0 0) (loc 'test 1 2)) '()))
+   (stx (list (stx 'a (span (loc 'test 0 1) (loc 'test 0 2)) '())
+              (stx 'b (span (loc 'test 1 0) (loc 'test 1 1)) '()))
+        (span (loc 'test 0 0) (loc 'test 1 2)) '()))
   
   ;; Test comments
   (check-stx-equal?
    (string->stx 'test "(a ; comment\nb)")
-   (stx (list (stx 'a _ (span (loc 'test 0 1) (loc 'test 0 2)) '())
-              (stx 'b _ (span (loc 'test 1 0) (loc 'test 1 1)) '()))
-        _ (span (loc 'test 0 0) (loc 'test 1 2)) '()))
+   (stx (list (stx 'a (span (loc 'test 0 1) (loc 'test 0 2)) '())
+              (stx 'b (span (loc 'test 1 0) (loc 'test 1 1)) '()))
+        (span (loc 'test 0 0) (loc 'test 1 2)) '()))
 
   ;; ============================================================
   ;; Quote parsing
@@ -399,7 +381,7 @@
   ;; Test quote of symbol: 'x -> (quote x)
   (let ([syn (string->stx 'test "'x")])
     ;; Outer stx wraps a two-element list: (quote x)
-    (check-match syn (stx (list (stx 'quote _ _ _) (stx 'x _ _ _)) _ _ _))
+    (check-match syn (stx (list (stx 'quote _ _) (stx 'x _ _)) _ _))
     ;; Span covers the whole 'x form
     (check-equal? (stx-span syn)
                   (span (loc 'test 0 0) (loc 'test 0 2)))
@@ -412,16 +394,16 @@
 
   ;; Test quote of list: '(a b) -> (quote (a b))
   (let ([syn (string->stx 'test "'(a b)")])
-    (check-match syn (stx (list (stx 'quote _ _ _)
-                                (stx (list (stx 'a _ _ _) (stx 'b _ _ _)) _ _ _))
-                      _ _ _))
+    (check-match syn (stx (list (stx 'quote _ _)
+                                (stx (list (stx 'a _ _) (stx 'b _ _)) _ _))
+                      _ _))
     ;; Outer span covers '(a b)
     (check-equal? (stx-span syn)
                   (span (loc 'test 0 0) (loc 'test 0 6))))
 
   ;; Test quote of number: '42 -> (quote 42)
   (check-match (string->stx 'test "'42")
-               (stx (list (stx 'quote _ _ _) (stx 42 _ _ _)) _ _ _))
+               (stx (list (stx 'quote _ _) (stx 42 _ _)) _ _))
 
   ;; ============================================================
   ;; Bracket lists
@@ -430,14 +412,14 @@
   ;; Test bracket list: [a b] parsed same as (a b)
   (check-stx-equal?
    (string->stx 'test "[a b]")
-   (stx (list (stx 'a _ (span (loc 'test 0 1) (loc 'test 0 2)) '())
-              (stx 'b _ (span (loc 'test 0 3) (loc 'test 0 4)) '()))
-        _ (span (loc 'test 0 0) (loc 'test 0 5)) '()))
+   (stx (list (stx 'a (span (loc 'test 0 1) (loc 'test 0 2)) '())
+              (stx 'b (span (loc 'test 0 3) (loc 'test 0 4)) '()))
+        (span (loc 'test 0 0) (loc 'test 0 5)) '()))
 
   ;; Test empty bracket list
   (check-stx-equal?
    (string->stx 'test "[]")
-   (stx '() _ (span (loc 'test 0 0) (loc 'test 0 2)) '()))
+   (stx '() (span (loc 'test 0 0) (loc 'test 0 2)) '()))
 
   ;; ============================================================
   ;; Improper lists (more than one element before dot)
@@ -446,10 +428,10 @@
   ;; Test improper list: (a b . c)
   (check-stx-equal?
    (string->stx 'test "(a b . c)")
-   (stx (cons (stx 'a _ (span (loc 'test 0 1) (loc 'test 0 2)) '())
-              (cons (stx 'b _ (span (loc 'test 0 3) (loc 'test 0 4)) '())
-                    (stx 'c _ (span (loc 'test 0 7) (loc 'test 0 8)) '())))
-        _ (span (loc 'test 0 0) (loc 'test 0 9)) '()))
+   (stx (cons (stx 'a (span (loc 'test 0 1) (loc 'test 0 2)) '())
+              (cons (stx 'b (span (loc 'test 0 3) (loc 'test 0 4)) '())
+                    (stx 'c (span (loc 'test 0 7) (loc 'test 0 8)) '())))
+        (span (loc 'test 0 0) (loc 'test 0 9)) '()))
 
   ;; ============================================================
   ;; Hash forms
@@ -458,17 +440,17 @@
   ;; Test standalone #t
   (check-stx-equal?
    (string->stx 'test "#t")
-   (stx #t _ (span (loc 'test 0 0) (loc 'test 0 2)) '()))
+   (stx #t (span (loc 'test 0 0) (loc 'test 0 2)) '()))
 
   ;; Test standalone #f
   (check-stx-equal?
    (string->stx 'test "#f")
-   (stx #f _ (span (loc 'test 0 0) (loc 'test 0 2)) '()))
+   (stx #f (span (loc 'test 0 0) (loc 'test 0 2)) '()))
 
   ;; Test #%identifier
   (check-stx-equal?
    (string->stx 'test "#%expression")
-   (stx '#%expression _ (span (loc 'test 0 0) (loc 'test 0 12)) '()))
+   (stx '#%expression (span (loc 'test 0 0) (loc 'test 0 12)) '()))
 
   ;; ============================================================
   ;; Atom edge cases
@@ -477,16 +459,16 @@
   ;; Test standalone number
   (check-stx-equal?
    (string->stx 'test "42")
-   (stx 42 _ (span (loc 'test 0 0) (loc 'test 0 2)) '()))
+   (stx 42 (span (loc 'test 0 0) (loc 'test 0 2)) '()))
 
   ;; Test negative number
   (check-stx-equal?
    (string->stx 'test "-7")
-   (stx -7 _ (span (loc 'test 0 0) (loc 'test 0 2)) '()))
+   (stx -7 (span (loc 'test 0 0) (loc 'test 0 2)) '()))
 
   ;; Test atom starting with dot (not a dotted pair separator)
   (check-match (string->stx 'test "(.foo)")
-               (stx (list (stx '.foo _ _ _)) _ _ _))
+               (stx (list (stx '.foo _ _)) _ _))
 
   ;; ============================================================
   ;; sexpr->syntax / syntax->sexpr round-trip
@@ -494,40 +476,33 @@
 
   ;; Proper list round-trip
   (check-equal?
-   (parameterize ([current-id 0])
-     (syntax->sexpr (sexpr->syntax '(a b c))))
+   (syntax->sexpr (sexpr->syntax '(a b c)))
    '(a b c))
 
   ;; Dotted pair round-trip
   (check-equal?
-   (parameterize ([current-id 0])
-     (syntax->sexpr (sexpr->syntax '(a . b))))
+   (syntax->sexpr (sexpr->syntax '(a . b)))
    '(a . b))
 
   ;; Improper list round-trip
   (check-equal?
-   (parameterize ([current-id 0])
-     (syntax->sexpr (sexpr->syntax '(a b . c))))
+   (syntax->sexpr (sexpr->syntax '(a b . c)))
    '(a b . c))
 
   ;; Nested list round-trip
   (check-equal?
-   (parameterize ([current-id 0])
-     (syntax->sexpr (sexpr->syntax '(let ([x 1]) x))))
+   (syntax->sexpr (sexpr->syntax '(let ([x 1]) x)))
    '(let ([x 1]) x))
 
   ;; Empty list round-trip
   (check-equal?
-   (parameterize ([current-id 0])
-     (syntax->sexpr (sexpr->syntax '())))
+   (syntax->sexpr (sexpr->syntax '()))
    '())
 
   ;; Atom round-trips
   (check-equal?
-   (parameterize ([current-id 0])
-     (syntax->sexpr (sexpr->syntax 'foo)))
+   (syntax->sexpr (sexpr->syntax 'foo))
    'foo)
   (check-equal?
-   (parameterize ([current-id 0])
-     (syntax->sexpr (sexpr->syntax 42)))
+   (syntax->sexpr (sexpr->syntax 42))
    42))
