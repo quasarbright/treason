@@ -74,6 +74,160 @@
     (list (hasheq 'label "my-let") (hasheq 'label "q"))))
 
   ;; ============================================================
+  ;; Pattern variable tests (issue #3)
+  ;; ============================================================
+  ;; Pattern variables in syntax-rules templates should support goto-definition,
+  ;; find-references, and autocomplete just like regular bindings.
+  ;;
+  ;; Index guide for "(let-syntax ([m (syntax-rules () [(_ q) (let ([a q]) a)])]) (m 5))":
+  ;;   q0 (char 37): pattern pvar in (_ q)
+  ;;   q1 (char 49): template reference in (let ([a q]) a)
+
+  ;; 1. Goto-definition on a template pvar reference → pattern pvar site
+  (test-case
+   "pvar: goto-def on template reference goes to pattern"
+   (define source "(let-syntax ([m (syntax-rules () [(_ q) (let ([a q]) a)])]) (m 5))")
+   ;; q0 = pattern pvar, q1 = template use
+   (check-equal?
+    (goto-definition source (find-position source "q" 1))
+    (list (hash 'uri test-uri 'range (find-range source "q" 0)))))
+
+  ;; 2. Goto-definition on pattern pvar site → itself
+  (test-case
+   "pvar: goto-def on pattern site returns itself"
+   (define source "(let-syntax ([m (syntax-rules () [(_ q) (let ([a q]) a)])]) (m 5))")
+   (check-equal?
+    (goto-definition source (find-position source "q" 0))
+    (list (hash 'uri test-uri 'range (find-range source "q" 0)))))
+
+  ;; 3. Find-references on pattern pvar → all template uses
+  (test-case
+   "pvar: find-refs on pattern pvar finds template uses"
+   (define source "(let-syntax ([m (syntax-rules () [(_ q) (let ([a q]) a)])]) (m 5))")
+   (check-equal?
+    (find-references source (find-position source "q" 0))
+    (list (hash 'uri test-uri 'range (find-range source "q" 1)))))
+
+  ;; 4. Find-references on template pvar reference → same set as from pattern
+  (test-case
+   "pvar: find-refs on template reference finds same set"
+   (define source "(let-syntax ([m (syntax-rules () [(_ q) (let ([a q]) a)])]) (m 5))")
+   (check-equal?
+    (find-references source (find-position source "q" 1))
+    (list (hash 'uri test-uri 'range (find-range source "q" 1)))))
+
+  ;; 5. Multiple template uses of same pvar
+  ;; Index guide for "(let-syntax ([dup (syntax-rules () [(_ q) (let ([a q]) q)])]) (dup 1))":
+  ;;   q0 (char 39): pattern pvar
+  ;;   q1 (char 51): first template use in (let ([a q])
+  ;;   q2 (char 55): second template use in body q
+  (test-case
+   "pvar: find-refs finds all template uses of pvar"
+   (define source "(let-syntax ([dup (syntax-rules () [(_ q) (let ([a q]) q)])]) (dup 1))")
+   (check-equal?
+    (length (find-references source (find-position source "q" 0)))
+    2)
+   (check-not-false
+    (member (hash 'uri test-uri 'range (find-range source "q" 1))
+            (find-references source (find-position source "q" 0))))
+   (check-not-false
+    (member (hash 'uri test-uri 'range (find-range source "q" 2))
+            (find-references source (find-position source "q" 0)))))
+
+  ;; 6. Multiple pvars in same pattern — each resolves independently
+  ;; Index guide for "(let-syntax ([swap (syntax-rules () [(_ p r) (let ([a p]) (let ([b r]) b))])]) (swap 1 2))":
+  ;;   p0 (char 17): 'p' in "swap" — not a pvar
+  ;;   p1 (char 40): pattern pvar p in (_ p r)
+  ;;   p2 (char 54): template use of p in (let ([a p])
+  ;;   r1 (char 42): pattern pvar r in (_ p r)
+  ;;   r2 (char 67): template use of r in (let ([b r])
+  (test-case
+   "pvar: multiple pvars resolve independently"
+   (define source "(let-syntax ([swap (syntax-rules () [(_ p r) (let ([a p]) (let ([b r]) b))])]) (swap 1 2))")
+   ;; p2 (template use) → p1 (pattern pvar)
+   (check-equal?
+    (goto-definition source (find-position source "p" 2))
+    (list (hash 'uri test-uri 'range (find-range source "p" 1))))
+   ;; r2 (template use) → r1 (pattern pvar)
+   (check-equal?
+    (goto-definition source (find-position source "r" 2))
+    (list (hash 'uri test-uri 'range (find-range source "r" 1))))
+   ;; p1 (pattern pvar) → p2 (template use)
+   (check-equal?
+    (find-references source (find-position source "p" 1))
+    (list (hash 'uri test-uri 'range (find-range source "p" 2))))
+   ;; r1 (pattern pvar) → r2 (template use)
+   (check-equal?
+    (find-references source (find-position source "r" 1))
+    (list (hash 'uri test-uri 'range (find-range source "r" 2)))))
+
+  ;; 7. Template-introduced identifiers (not pvars) don't produce errors
+  (test-case
+   "pvar: template-introduced identifiers are not resolved as pvars"
+   ;; 'a' in (let ([a q]) a) is template-introduced, not a pvar.
+   ;; After expansion it becomes a real let binding, so goto-def on the
+   ;; reference (a3) resolves to the binding site (a2), not to any pvar.
+   ;; a2 (char 47): template 'a' binding site in (let ([a q])
+   ;; a3 (char 53): template 'a' reference in body a
+   (define source "(let-syntax ([m (syntax-rules () [(_ q) (let ([a q]) a)])]) (m 5))")
+   ;; a3 resolves to a2 — the let binding, not a pattern variable
+   (check-equal?
+    (goto-definition source (find-position source "a" 3))
+    (list (hash 'uri test-uri 'range (find-range source "a" 2)))))
+
+  ;; 8. Autocomplete inside template suggests pattern variables
+  ;; q1 (char 49) is the template reference — autocomplete there should include q
+  (test-case
+   "pvar: autocomplete in template suggests pattern variables"
+   (define source "(let-syntax ([m (syntax-rules () [(_ q) (let ([a q]) a)])]) (m 5))")
+   (check-not-false
+    (member (hasheq 'label "q")
+            (autocomplete source (find-position source "q" 1)))))
+
+  ;; 9. Pvar with multiple clauses — correct clause's pvar is resolved
+  ;; Index guide for "(let-syntax ([m (syntax-rules () [(_ p) p] [(_ p r) (let ([a p]) r)])]) (m 1))":
+  ;;   p0 (char 37): pattern pvar in first clause (_ p)
+  ;;   p1 (char 40): template use in first clause body p
+  (test-case
+   "pvar: correct clause pvar resolved when multiple clauses"
+   (define source "(let-syntax ([m (syntax-rules () [(_ p) p] [(_ p r) (let ([a p]) r)])]) (m 1))")
+   ;; p1 (template use in matched clause) → p0 (pattern pvar in that clause)
+   (check-equal?
+    (goto-definition source (find-position source "p" 1))
+    (list (hash 'uri test-uri 'range (find-range source "p" 0)))))
+
+  ;; 10. Pvar resolution works even when the macro is never called
+  ;; Index guide for "(let-syntax ([m (syntax-rules () [(_ q) (let ([a q]) a)])]) 42)":
+  ;;   q0 (char 37): pattern pvar in (_ q)
+  ;;   q1 (char 49): template reference in (let ([a q]) a)
+  (test-case
+   "pvar: goto-def works when macro is never called"
+   (define source "(let-syntax ([m (syntax-rules () [(_ q) (let ([a q]) a)])]) 42)")
+   ;; q1 (template use) → q0 (pattern pvar), even though (m ...) is never called
+   (check-equal?
+    (goto-definition source (find-position source "q" 1))
+    (list (hash 'uri test-uri 'range (find-range source "q" 0))))
+   ;; q0 (pattern pvar) → itself
+   (check-equal?
+    (goto-definition source (find-position source "q" 0))
+    (list (hash 'uri test-uri 'range (find-range source "q" 0))))
+   ;; find-refs from pattern pvar finds the template use
+   (check-equal?
+    (find-references source (find-position source "q" 0))
+    (list (hash 'uri test-uri 'range (find-range source "q" 1)))))
+
+  ;; 11. Goto-def on an unused pvar (not referenced in template)
+  ;; Index guide for "(let-syntax ([m (syntax-rules () [(_ q) 42])]) 1)":
+  ;;   q0 (char 37): pattern pvar in (_ q) — never used in template
+  (test-case
+   "pvar: goto-def on unused pvar returns itself"
+   (define source "(let-syntax ([m (syntax-rules () [(_ q) 42])]) 1)")
+   ;; q0 is declared in the pattern but never referenced in the template
+   (check-equal?
+    (goto-definition source (find-position source "q" 0))
+    (list (hash 'uri test-uri 'range (find-range source "q" 0)))))
+
+  ;; ============================================================
   ;; Goto-definition tests for each binding form
   ;; ============================================================
 
@@ -102,10 +256,10 @@
    (check-equal?
     (goto-definition source (find-position source "x" 1))
     (list (hash 'uri test-uri 'range (find-range source "x" 1))))
-   ;; Outer binding site has no references (shadowed), returns empty
+   ;; Outer binding site has no references (shadowed), returns itself
    (check-equal?
     (goto-definition source (find-position source "x" 0))
-    (list)))
+    (list (hash 'uri test-uri 'range (find-range source "x" 0)))))
 
   ;; 3. let binding - reference in rhs of nested let
   (test-case
@@ -161,6 +315,24 @@
     (goto-definition source (find-position source "x" 0))
     (list (hash 'uri test-uri 'range (find-range source "x" 0)))))
 
+  ;; 5c. let binding - binding site with no references
+  (test-case
+   "goto-def: let binding site no references"
+   (define source "(let ([x 1]) 42)")
+   ;; x is bound but never used — goto-def on x should still return itself
+   (check-equal?
+    (goto-definition source (find-position source "x" 0))
+    (list (hash 'uri test-uri 'range (find-range source "x" 0)))))
+
+  ;; 5d. let-syntax binding site with no uses
+  (test-case
+   "goto-def: let-syntax binding site no uses"
+   (define source "(let-syntax ([m (syntax-rules () [(_) 42])]) 1)")
+   ;; m is defined but never called — goto-def on m should still return itself
+   (check-equal?
+    (goto-definition source (find-position source "m" 0))
+    (list (hash 'uri test-uri 'range (find-range source "m" 0)))))
+
   ;; 6. let-syntax - macro binding
   (test-case
    "goto-def: let-syntax"
@@ -206,18 +378,6 @@
    (check-equal?
     (goto-definition source (find-position source "$x" 4))
     (list (hash 'uri test-uri 'range (find-range source "$x" 0)))))
-
-  ;; 10. Macro captures outer binding
-  (displayln "skipping testing goto definition on template")
-  #;
-  (test-case
-   "goto-def: macro captures outer"
-   (define source "(let ([x 1]) (let-syntax ([get-x (syntax-rules () [(_) x])]) (let ([x 2]) (get-x))))")
-   ;; The x inside get-x template should refer to outer x (captured at definition site)
-   ;; Note: This test documents expected hygienic behavior
-   (check-equal?
-    (goto-definition source (find-position source "x" 2))
-    (list (hash 'uri test-uri 'range (find-range source "x" 0)))))
 
   ;; 11. Unbound variable - empty result
   (test-case
@@ -692,8 +852,6 @@
    (define source "(let ([$x 1]) (let-syntax ([get-$x (syntax-rules () [(_) $x])]) (let ([$x 2]) (get-$x))))")
    ;; The $x in the template should resolve to the outer $x
    ;; because it was captured at macro definition time
-   (displayln "skipping testing goto definition on template")
-   #;
    (check-equal?
     (goto-definition source (find-position source "$x" 2))
     (list (hash 'uri test-uri 'range (find-range source "$x" 0))))
@@ -844,10 +1002,10 @@
    (check-equal?
     (goto-definition source (find-position source "x" 1))
     (list (hash 'uri test-uri 'range (find-range source "x" 0))))
-   ;; y binding site has no references, returns empty
+   ;; y binding site has no references, returns itself
    (check-equal?
     (goto-definition source (find-position source "y" 0))
-    (list)))
+    (list (hash 'uri test-uri 'range (find-range source "y" 0)))))
 
   ;; 4. Find-references works for valid bindings in program with errors
   (test-case

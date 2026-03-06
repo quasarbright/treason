@@ -56,10 +56,14 @@
 (define (identifier->key id)
   (identifier-key (identifier-symbol id) (identifier-marks id)))
 
+;; A PatternEnv is a [HashOf IdentifierKey Stx]
+;; Maps each pattern variable's key to the syntax it matched at the use site.
+
 ;; A Binding is one of:
 ;; - VarBinding
 ;; - KeywordBinding
 ;; - MacroBinding
+;; - PatternVariableBinding
 ;; Represents what an identifier resolves to in a scope.
 
 ;; A VarBinding is a (var-binding Identifier Symbol)
@@ -77,6 +81,10 @@
 ;; site : Identifier - the binding site identifier (has span for LSP)
 ;; macrot : Syntax - the syntax-rules transformer expression
 ;; scp : Scope - definition-site scope
+
+;; A PatternVariableBinding is a (pattern-variable-binding Identifier)
+(struct pattern-variable-binding [site] #:transparent)
+;; site : Identifier - the pattern variable identifier in the pattern (has span for LSP)
 
 ;; ------------------------------------------------------------
 ;; Scopes (Scope Graph Vertices)
@@ -269,6 +277,7 @@
              (define scp^ (new-scope scp))
              (define m-binding (macro-binding mname-stx macrot-stx scp))
              (scope-bind! scp^ mname-stx m-binding)
+             (record-all-pvar-resolutions-for-macrot! macrot-stx scp)
              (expand-expr body scp^)]
             [_ (stx-error 'let-syntax "bad syntax" expr #f)]))]
        ;; macro application
@@ -328,7 +337,6 @@
           (define var-name (gensym (identifier-symbol var-stx)))
           (define var-bnd (var-binding var-stx var-name))
           (scope-bind! scp var-stx var-bnd)
-          (record-binding-site! var-stx)
           `(define ,var-name ,expr-stx))]
        ;; define-syntax
        [(and (keyword-binding? binding)
@@ -339,7 +347,7 @@
           (define macrot-stx (list-ref elems 2))
           (define m-binding (macro-binding var-stx macrot-stx scp))
           (scope-bind! scp var-stx m-binding)
-          (record-binding-site! var-stx)
+          (record-all-pvar-resolutions-for-macrot! macrot-stx scp)
           `(begin))]
        ;; begin
        [(and (keyword-binding? binding)
@@ -415,6 +423,66 @@
   (define disjoined-scp (disjoin def-mark introduced-defn-scp
                                  use-mark use-scp))
   (values final-stx disjoined-scp))
+
+;; ============================================================
+;; Pattern Variable LSP Resolution
+;; ============================================================
+
+;; record-all-pvar-resolutions-for-macrot! : Syntax Scope -> Void
+;; Eagerly records LSP pvar resolutions for every clause in a syntax-rules transformer.
+;; Called at let-syntax/define-syntax expansion time so that goto-definition,
+;; find-references, and autocomplete work on pattern variables even if the macro
+;; is never applied.
+(define (record-all-pvar-resolutions-for-macrot! macrot def-scp)
+  (match (stx-list macrot)
+      [(list _ literals-stx clauses ...)
+       (define literal-ids (stx-list literals-stx))
+       (define is-literal? (make-is-literal? literal-ids))
+       (for ([clause clauses])
+         (match (stx-list clause)
+           [(list pat tmpl)
+            (define pvar-scp (build-pvar-scope pat is-literal? def-scp))
+            (record-pvar-resolutions! tmpl pvar-scp)]))]))
+
+;; build-pvar-scope : Pattern (Id -> Bool) Scope -> Scope
+;; Builds a scope containing a pattern-variable-binding for each pvar in the pattern.
+;; Also records each pvar as a binding site so goto-definition works even if the pvar
+;; is never referenced in the template.
+;; The scope's parent is def-scp so autocomplete traversal includes definition-site names.
+;; The wildcard _ is excluded since it is never referenced in templates.
+(define (build-pvar-scope pat is-literal? def-scp)
+  (define pvar-scp (new-scope def-scp))
+  (let loop ([p pat])
+    (match p
+      [(? identifier? id)
+       (unless (or (is-literal? id) (eq? (identifier-symbol id) '_))
+         (scope-bind! pvar-scp id (pattern-variable-binding id)))]
+      [(stx (? list? elems) _ _)
+       (for ([elem elems]) (loop elem))]
+      [(stx (cons a d) _ _)
+       (loop a)
+       (loop d)]
+      [_ (void)]))
+  pvar-scp)
+
+;; record-pvar-resolutions! : Syntax Scope -> Void
+;; Walks a template and records LSP resolutions for pattern variable references.
+;; For each identifier that resolves to a pattern-variable-binding in pvar-scp,
+;; records the resolution so goto-definition and find-references work on template uses.
+;; Template-introduced identifiers that don't resolve to pvars are silently skipped.
+(define (record-pvar-resolutions! tmpl pvar-scp)
+  (match tmpl
+    [(? identifier? id)
+     (define bnd (scope-resolve-internal pvar-scp id))
+     (when (pattern-variable-binding? bnd)
+       (record-resolution! id bnd pvar-scp))]
+    [(stx (? list? elems) _ _)
+     (for ([elem elems])
+       (record-pvar-resolutions! elem pvar-scp))]
+    [(stx (cons a d) _ _)
+     (record-pvar-resolutions! a pvar-scp)
+     (record-pvar-resolutions! d pvar-scp)]
+    [_ (void)]))
 
 ;; ============================================================
 ;; Template Projection and Combination
@@ -505,17 +573,15 @@
 
 ;; select-syntax-rule : Syntax Syntax Scope Scope -> (values PatternEnv Syntax)
 ;; Selects the first matching clause from a syntax-rules transformer.
-;; Returns the pattern environment (bindings of pattern variables) and
-;; the template to instantiate.
+;; Returns the pattern environment and the template to instantiate.
 (define (select-syntax-rule macrot expr def-scp use-scp)
   ;; macrot is (syntax-rules (literal ...) clause ...)
-  (define macrot-elems (stx-list macrot))
-  (define literals-stx (list-ref macrot-elems 1))
-  (define literal-id* (stx-list literals-stx))
-  (define clause* (cddr macrot-elems))
-  (define is-literal? (make-is-literal? literal-id*))
-  (define literal-match? (make-literal-match? def-scp use-scp))
-  (try-clauses clause* expr is-literal? literal-match?))
+  (match (stx-list macrot)
+    [(list _ literals-stx clauses ...)
+     (define literal-ids (stx-list literals-stx))
+     (define is-literal? (make-is-literal? literal-ids))
+     (define literal-match? (make-literal-match? def-scp use-scp))
+     (try-clauses clauses expr is-literal? literal-match?)]))
 
 ;; try-clauses : [Listof Clause] Syntax (Id -> Bool) (Id Id -> Bool) -> (values PatternEnv Syntax)
 ;; Tries each clause in order until one matches.
@@ -523,14 +589,12 @@
 (define (try-clauses clauses expr is-literal? literal-match?)
   (match clauses
     [(cons clause rest)
-     ;; clause is [pat tmpl]
-     (define clause-elems (stx-list clause))
-     (define pat (list-ref clause-elems 0))
-     (define tmpl (list-ref clause-elems 1))
-     (define maybe-penv (match-top-pattern pat expr is-literal? literal-match?))
-     (if maybe-penv
-         (values maybe-penv tmpl)
-         (try-clauses rest expr is-literal? literal-match?))]
+     (match (stx-list clause)
+       [(list pat tmpl)
+        (define maybe-penv (match-top-pattern pat expr is-literal? literal-match?))
+        (if maybe-penv
+            (values maybe-penv tmpl)
+            (try-clauses rest expr is-literal? literal-match?))])]
     ['() (error 'syntax-rules "no pattern matched")]))
 
 ;; match-top-pattern : Pattern Syntax (Id -> Bool) (Id Id -> Bool) -> (or PatternEnv #f)
@@ -655,7 +719,8 @@
     [(scope parent bindings)
      (when (hash-has-key? bindings key)
        (error 'scope-bind! "name already bound: ~a" id))
-     (hash-set! bindings key bnd)]
+     (hash-set! bindings key bnd)
+     (record-binding-site! id)]
     [(disjoin mark1 scope1 mark2 scope2)
      (cond
        [(top-mark=? id mark1) (scope-bind! scope1 (drop-top-mark id) bnd)]
@@ -776,6 +841,7 @@
   (match bnd
     [(var-binding site _) site]
     [(macro-binding site _ _) site]
+    [(pattern-variable-binding site) site]
     [(keyword-binding _) #f]))
 
 ;; record-binding-site! : Identifier -> Void
