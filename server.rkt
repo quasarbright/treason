@@ -59,20 +59,22 @@ do we want actual types instead of json?
   (define srv (new server% [client client]))
   (log-server-info "started server")
   (let loop ()
-    (match (read-message in)
-      [(request id method parameters)
-       (define rsp
-         (if (object-method-arity-includes? srv method 1)
-             (with-handlers ([exn:fail? (lambda (err) (log-server-error "~a" err) (response id 'null (hasheq 'code -32603 'message (format "internal error: ~a" err))))])
-               (define data (dynamic-send srv method parameters))
-               (response id data 'null))
-             (response id 'null (hasheq 'code -32601 'message (format "Unknown method: ~a" method)))))
-       (write-message rsp out)]
-      [(notification method parameters)
-       (when (object-method-arity-includes? srv method 1)
-         (with-handlers ([exn:fail? (lambda (err) (log-server-error "~a" err))])
-           (dynamic-send srv method parameters)))])
-    (loop)))
+    (define msg (read-message in))
+    (unless (eof-object? msg)
+      (match msg
+        [(request id method parameters)
+         (define rsp
+           (if (object-method-arity-includes? srv method 1)
+               (with-handlers ([exn:fail? (lambda (err) (log-server-error "~a" err) (response id 'null (hasheq 'code -32603 'message (format "internal error: ~a" err))))])
+                 (define data (dynamic-send srv method parameters))
+                 (response id data 'null))
+               (response id 'null (hasheq 'code -32601 'message (format "Unknown method: ~a" method)))))
+         (write-message rsp out)]
+        [(notification method parameters)
+         (when (object-method-arity-includes? srv method 1)
+           (with-handlers ([exn:fail? (lambda (err) (log-server-error "~a" err))])
+             (dynamic-send srv method parameters)))])
+      (loop))))
 
 (define proxy-client%
   (class object%
@@ -320,26 +322,31 @@ do we want actual types instead of json?
     [(hash* ['line line] ['character col])
      (loc source line col)]))
 
-;; -> message?
+;; -> (U message? eof)
 (define (read-message [in (current-input-port)])
   (define headers (read-headers in))
-  (define content-length (string->number (hash-ref headers 'Content-Length (lambda () (error 'read-message "missing Content-Length header")))))
-  (define bytes (read-bytes content-length in))
-  (define js-str (bytes->string/utf-8 bytes))
-  (log-server-debug "received message: ~a" js-str)
-  (define js (string->jsexpr js-str))
-  (match js
-    [(hash* ['id id] ['method method] ['params params])
-     (request id
-              (string->symbol method)
-              params)]
-    [(hash* ['method method] ['params params])
-     (notification (string->symbol method)
-                   params)]
-    [(hash* ['id id] ['result result])
-     (response id result 'null)]
-    [(hash* ['id id] ['error error])
-     (response id 'null error)]))
+  (cond
+    [(eof-object? headers) eof]
+    [else
+     (define content-length
+       (string->number (hash-ref headers 'Content-Length
+                                 (lambda () (error 'read-message "missing Content-Length header")))))
+     (define bytes (read-bytes content-length in))
+     (cond
+       [(eof-object? bytes) eof]
+       [else
+        (define js-str (bytes->string/utf-8 bytes))
+        (log-server-debug "received message: ~a" js-str)
+        (define js (string->jsexpr js-str))
+        (match js
+          [(hash* ['id id] ['method method] ['params params])
+           (request id (string->symbol method) params)]
+          [(hash* ['method method] ['params params])
+           (notification (string->symbol method) params)]
+          [(hash* ['id id] ['result result])
+           (response id result 'null)]
+          [(hash* ['id id] ['error error])
+           (response id 'null error)])])]))
 
 (module+ test
   (define-check (check-read-of-write msg)
@@ -366,22 +373,28 @@ do we want actual types instead of json?
     (check-equal? (read-message in)
                   (response 2 'null "failure"))
     (check-equal? (read-message in)
-                  (response 2 'null "failure"))))
+                  (response 2 'null "failure")))
+  ;; EOF returns eof
+  (check-pred eof-object? (read-message (open-input-string ""))))
 
-;; -> (Hash Symbol String)
+;; -> (U (Hash Symbol String) eof)
 (define (read-headers [in (current-input-port)])
   (let loop ([headers (hash)])
     (define line (read-line in 'return-linefeed))
-    (define result (regexp-match #px"([^:]+): (.*)" line))
-    (match result
-      [(list _ name value)
-       (loop (hash-set headers (string->symbol name)
-                               value))]
-      [#f headers])))
+    (if (eof-object? line)
+        eof
+        (let ([result (regexp-match #px"([^:]+): (.*)" line)])
+          (match result
+            [(list _ name value)
+             (loop (hash-set headers (string->symbol name)
+                                     value))]
+            [#f headers])))))
 
 (module+ test
   (check-equal? (read-headers (open-input-string "Content-Length: 2\r\nContent-Type: application/vscode-jsonrpc; charset=utf-8\r\n\r\n{}"))
-                (hash 'Content-Length "2" 'Content-Type "application/vscode-jsonrpc; charset=utf-8")))
+                (hash 'Content-Length "2" 'Content-Type "application/vscode-jsonrpc; charset=utf-8"))
+  ;; EOF returns eof
+  (check-pred eof-object? (read-headers (open-input-string ""))))
 
 ;; message? -> void?
 (define (write-message msg [out (current-output-port)])
