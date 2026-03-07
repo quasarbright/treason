@@ -156,6 +156,13 @@
                         (loc (source) (line) (col))))
        (define e (reverse elements))
        (stx e sp '())]
+      [(and (or (char=? (current-char) #\))
+                (char=? (current-char) #\]))
+            (not (char=? (current-char) close-char)))
+       ;; Mismatched closing delimiter — raise error to avoid infinite loop
+       (parse-error! (format "unexpected ~a, expected ~a" (current-char) close-char)
+                     (span (loc (source) (line) (col))
+                           (loc (source) (line) (add1 (col)))))]
       [(char=? (current-char) #\.)
        ;; Check if this is a dot for improper list
        (define next-pos (add1 (pos)))
@@ -490,6 +497,10 @@
   ;; Test atom starting with dot (not a dotted pair separator)
   (check-match (string->stx 'test "(.foo)")
                (stx (list (stx '.foo _ _)) _ _))
+
+  ;; Test mismatched closing delimiter raises parse error (not infinite loop)
+  (check-exn exn:fail:parse?
+             (lambda () (string->stx 'test "([x)]")))
 
   ;; ============================================================
   ;; sexpr->syntax / syntax->sexpr round-trip
