@@ -451,7 +451,7 @@
   (match (stx-list macrot)
       [(list _ literals-stx clauses ...)
        (define literal-ids (stx-list literals-stx))
-       (define is-literal? (make-is-literal? literal-ids))
+       (define is-literal? (make-is-datum-literal? literal-ids))
        (for ([clause clauses])
          (match (stx-list clause)
            [(list pat tmpl)
@@ -510,62 +510,60 @@
   (match (stx-list macrot)
     [(list _ literals-stx clauses ...)
      (define literal-ids (stx-list literals-stx))
-     (define is-literal? (make-is-literal? literal-ids))
-     (define literal-match? (make-literal-match? def-scp use-scp))
-     (try-clauses who clauses expr is-literal? literal-match?)]))
+     (define is-datum-literal? (make-is-datum-literal? literal-ids))
+     (try-clauses who clauses expr is-datum-literal?)]))
 
-;; try-clauses : Symbol [Listof Clause] Syntax (Id -> Bool) (Id Id -> Bool) -> (values PatternEnv Syntax)
+;; try-clauses : Symbol [Listof Clause] Syntax (Id -> Bool) -> (values PatternEnv Syntax)
 ;; Tries each clause in order until one matches.
 ;; A Clause is (list Pattern Template).
-(define (try-clauses who clauses expr is-literal? literal-match?)
+(define (try-clauses who clauses expr is-datum-literal?)
   (match clauses
     [(cons clause rest)
      (match (stx-list clause)
        [(list pat tmpl)
-        (define maybe-penv (match-top-pattern pat expr is-literal? literal-match?))
+        (define maybe-penv (match-top-pattern pat expr is-datum-literal?))
         (if maybe-penv
             (values maybe-penv tmpl)
-            (try-clauses who rest expr is-literal? literal-match?))])]
+            (try-clauses who rest expr is-datum-literal?))])]
     ['() (raise (stx-error who "no pattern matched" expr #f))]))
 
-;; match-top-pattern : Pattern Syntax (Id -> Bool) (Id Id -> Bool) -> (or PatternEnv #f)
+;; match-top-pattern : Pattern Syntax (Id -> Bool) -> (or PatternEnv #f)
 ;; Matches a top-level pattern against syntax.
 ;; The car of both pattern and syntax is the macro name (ignored per syntax-rules semantics).
 ;; Returns a PatternEnv on success, #f on failure.
-(define (match-top-pattern pat expr is-literal? literal-match?)
+(define (match-top-pattern pat expr is-datum-literal?)
   (match* (pat expr)
     [((stx (list _ pd ...) _ _) (stx (list _ ed ...) _ _))
-     (match-pattern-list pd ed is-literal? literal-match?)]
+     (match-pattern-list pd ed is-datum-literal?)]
     [((stx (cons _ pd) _ _) (stx (cons _ ed) _ _))
-     (match-pattern pd ed is-literal? literal-match?)]
+     (match-pattern pd ed is-datum-literal?)]
     [(_ _) #f]))
 
-;; match-pattern-list : [Listof Pattern] [Listof Syntax] ... -> (or PatternEnv #f)
+;; match-pattern-list : [Listof Pattern] [Listof Syntax] (Identifier -> Boolean) -> (or PatternEnv #f)
 ;; Matches a list of patterns against a list of syntax elements.
-(define (match-pattern-list pats exprs is-literal? literal-match?)
+(define (match-pattern-list pats exprs is-datum-literal?)
   (cond
     [(and (null? pats) (null? exprs)) (hash)]
     [(or (null? pats) (null? exprs)) #f]
     [else
-     (define resa (match-pattern (car pats) (car exprs) is-literal? literal-match?))
+     (define resa (match-pattern (car pats) (car exprs) is-datum-literal?))
      (and resa
-          (let ([resd (match-pattern-list (cdr pats) (cdr exprs) is-literal? literal-match?)])
+          (let ([resd (match-pattern-list (cdr pats) (cdr exprs) is-datum-literal?)])
             (and resd (hash-union resa resd))))]))
 
-;; match-pattern : Pattern Syntax (Id -> Bool) (Id Id -> Bool) -> (or PatternEnv #f)
+;; match-pattern : Pattern Syntax (Id -> Bool) -> (or PatternEnv #f)
 ;; Matches a pattern against syntax.
 ;; Returns a PatternEnv mapping pattern variables to matched syntax on success,
 ;; or #f if the pattern doesn't match.
-(define (match-pattern pat expr is-literal? literal-match?)
+(define (match-pattern pat expr is-datum-literal?)
   (match* (pat expr)
-    ;; literal-id: must match via literal-match?
     [((? identifier? lit) (? identifier? target-id))
-     #:when (is-literal? lit)
-     (and (literal-match? lit target-id)
+     #:when (is-datum-literal? lit)
+     (and (equal? (stx->datum lit) (stx->datum target-id))
           (hash))]
     ;; pvar: matches any syntax, binds it using IdentifierKey
     [((? identifier? pvar) syn)
-     #:when (not (is-literal? pvar))
+     #:when (not (is-datum-literal? pvar))
      (hash (identifier->key pvar) syn)]
     ;; datum literal: must be equal
     [((stx (? number? v1) _ _) (stx (? number? v2) _ _))
@@ -573,12 +571,12 @@
      (hash)]
     ;; list: match element-wise
     [((stx (? list? pelems) _ _) (stx (? list? eelems) _ _))
-     (match-pattern-list pelems eelems is-literal? literal-match?)]
+     (match-pattern-list pelems eelems is-datum-literal?)]
     ;; cons (dotted pair): match both parts and combine environments
     [((stx (cons pa pd) _ _) (stx (cons ea ed) _ _))
-     (let ([resa (match-pattern pa ea is-literal? literal-match?)])
+     (let ([resa (match-pattern pa ea is-datum-literal?)])
        (and resa
-            (let ([resd (match-pattern pd ed is-literal? literal-match?)])
+            (let ([resd (match-pattern pd ed is-datum-literal?)])
               (and resd
                    (hash-union resa resd)))))]
     [(_ _) #f]))
@@ -586,9 +584,16 @@
 ;; make-is-literal? : [Listof Identifier] -> (Identifier -> Boolean)
 ;; Creates a predicate that checks if an identifier is a literal
 ;; (using bound-identifier=? comparison).
-(define (make-is-literal? literal-id*)
+(define (make-is-datum-literal? literal-ids)
   (lambda (id)
-    (memf (lambda (x) (bound-identifier=? id x)) literal-id*)))
+    (memf (lambda (x) (eq? (identifier-symbol x) (identifier-symbol id))) literal-ids)))
+
+;; make-is-literal? : [Listof Identifier] -> (Identifier -> Boolean)
+;; Creates a predicate that checks if an identifier is a literal
+;; (using bound-identifier=? comparison).
+(define (make-is-literal? literal-ids)
+  (lambda (id)
+    (memf (lambda (x) (bound-identifier=? id x)) literal-ids)))
 
 ;; make-literal-match? : Scope Scope -> (Identifier Identifier -> Boolean)
 ;; Creates a predicate for matching literals in syntax-rules.
@@ -1148,5 +1153,16 @@
   ;; bare identifier in block - should produce stx-error, not crash
   (check-match
    (expand '(block x))
-   `(block ,(? stx-error?))))
-
+   `(block ,(? stx-error?)))
+  
+  ;; datum literals
+  (check-equal?
+   (expand 
+    '(block (define-syntax lit (syntax-rules (x y) [(lit x) 1] [(lit y) 2] [(lit z) 3]))
+            (#%expression (lit x))
+            (#%expression (lit y))
+            (#%expression (lit something-else))))
+   '(block (begin)
+           (#%expression 1)
+           (#%expression 2)
+           (#%expression 3))))
