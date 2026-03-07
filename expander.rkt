@@ -33,6 +33,7 @@
 
 (provide (all-defined-out))
 (require "stx.rkt")
+(require "stx-quote.rkt")
 (require "reader.rkt")
 (require racket/hash)
 
@@ -110,9 +111,11 @@
 ;; def-scp : Scope - definition-site scope (for macro-introduced identifiers)
 ;; use-scp : Scope - use-site scope (for pattern variable substitutions, no mark)
 
-;; An unbound is a sentinel value indicating that resolution failed.
-;; TODO just use stx-error
-(struct unbound [] #:transparent)
+;; with-stx-error-handling : catches raised stx-error? and returns it
+;; Use this instead of (with-handlers ([exn:fail? ...])) so unexpected errors are not silently swallowed.
+(define-syntax-rule (with-stx-error-handling body ...)
+  (with-handlers ([stx-error? (lambda (err) err)])
+    body ...))
 
 ;; ------------------------------------------------------------
 ;; LSP State
@@ -233,7 +236,7 @@
      (cond
        [(var-binding? binding) (var-binding-name binding)]
        [(keyword-binding? binding) (identifier-symbol id)]
-       [(unbound? binding) (stx-error 'expand "unbound identifier" expr #f)]
+       [(stx-error? binding) binding]
        [else (stx-error 'expand-expr "unexpected binding type" expr #f)])]
     [(stx (list* head-stx _) _ _)
      #:when (identifier? head-stx)
@@ -250,12 +253,11 @@
        ;; let
        [(and (keyword-binding? binding)
              (eq? 'let (keyword-binding-name binding)))
-        (with-handlers ([exn:fail? (lambda (_e) (stx-error 'let "bad syntax" expr #f))])
-          (define elems (stx-list expr))
-          (define binding-clause (car (stx-list (list-ref elems 1))))
-          (define body (list-ref elems 2))
-          (match (stx-list binding-clause)
-            [(list x-stx e-stx)
+        (with-stx-error-handling
+          (match expr
+            [(stx-quote (let ([,x-stx ,e-stx]) ,body))
+             (unless (identifier? x-stx)
+               (raise (stx-error 'let "bad syntax" expr x-stx)))
              (define e^ (expand-expr e-stx scp))
              (define scp^ (new-scope scp))
              (define x-name (gensym (identifier-symbol x-stx)))
@@ -263,39 +265,42 @@
              (scope-bind! scp^ x-stx x-binding)
              (define b^ (expand-expr body scp^))
              `(let ([,x-name ,e^]) ,b^)]
-            [_ (stx-error 'let "bad syntax" expr #f)]))]
+            [_ (raise (stx-error 'let "bad syntax" expr #f))]))]
        ;; let-syntax
        [(and (keyword-binding? binding)
              (eq? 'let-syntax (keyword-binding-name binding)))
-        (with-handlers ([exn:fail? (lambda (_e) (stx-error 'let-syntax "bad syntax" expr #f))])
-          (define elems (stx-list expr))
-          (define binding-clause (car (stx-list (list-ref elems 1))))
-          (define body (list-ref elems 2))
-          (match (stx-list binding-clause)
-            [(list mname-stx macrot-stx)
+        (with-stx-error-handling
+          (match expr
+            [(stx-quote (let-syntax ([,mname-stx ,macrot-stx]) ,body))
+             (unless (identifier? mname-stx)
+               (raise (stx-error 'let-syntax "bad syntax" expr mname-stx)))
              (define scp^ (new-scope scp))
              (define m-binding (macro-binding mname-stx macrot-stx scp))
              (scope-bind! scp^ mname-stx m-binding)
              (record-all-pvar-resolutions-for-macrot! macrot-stx scp)
              (expand-expr body scp^)]
-            [_ (stx-error 'let-syntax "bad syntax" expr #f)]))]
+            [_ (raise (stx-error 'let-syntax "bad syntax" expr #f))]))]
        ;; macro application
        [(macro-binding? binding)
-        (define who (identifier-symbol (macro-binding-site binding)))
-        (with-handlers ([exn:fail? (lambda (_e) (stx-error who "bad syntax" expr #f))])
+        (with-stx-error-handling
           (define-values (marked-stx disjoined-scp) (expand-macro head-stx expr scp))
           (expand-expr marked-stx disjoined-scp))]
-       ;; unbound or variable in head position - syntax error
-       ;; Still resolve identifier arguments for fault-tolerant LSP support
-       [(or (unbound? binding) (var-binding? binding))
+       ;; unbound in head position - pass through the stx-error from scope-resolve
+       [(stx-error? binding)
         (for ([arg (cdr (stx-list expr))])
           (when (identifier? arg)
             (scope-resolve scp arg)))
-        (stx-error 'expand "not a procedure or syntax" expr head-stx)]
-       [else (stx-error 'expand-expr "unexpected form: ~a" expr head-stx)])]
-    ;; Non-identifier in head position or other forms
-    [(stx (list* _ _) _ _)
-     (stx-error 'expand "bad syntax" expr #f)]))
+        binding]
+       ;; variable in head position - not callable
+       [(var-binding? binding)
+        (for ([arg (cdr (stx-list expr))])
+          (when (identifier? arg)
+            (scope-resolve scp arg)))
+        (stx-error (identifier-symbol head-stx) "not a procedure or syntax" expr head-stx)]
+       [else (stx-error #f "unexpected form" expr head-stx)])]
+    ;; Non-identifier in head position
+    [(stx (list* head-stx _) _ _)
+     (stx-error #f "not a procedure or syntax" expr head-stx)]))
 
 ;; ============================================================
 ;; Definition Expansion (Two-Pass)
@@ -329,25 +334,29 @@
        ;; define
        [(and (keyword-binding? binding)
              (eq? 'define (keyword-binding-name binding)))
-        (with-handlers ([exn:fail? (lambda (_e) (stx-error 'define "bad syntax" def #f))])
-          (define elems (stx-list def))
-          (define var-stx (list-ref elems 1))
-          (define expr-stx (list-ref elems 2))
-          (define var-name (gensym (identifier-symbol var-stx)))
-          (define var-bnd (var-binding var-stx var-name))
-          (scope-bind! scp var-stx var-bnd)
-          `(define ,var-name ,expr-stx))]
+        (with-stx-error-handling
+          (match def
+            [(stx-quote (define ,var-stx ,expr-stx))
+             (unless (identifier? var-stx)
+               (raise (stx-error 'define "bad syntax" def var-stx)))
+             (define var-name (gensym (identifier-symbol var-stx)))
+             (define var-bnd (var-binding var-stx var-name))
+             (scope-bind! scp var-stx var-bnd)
+             `(define ,var-name ,expr-stx)]
+            [_ (raise (stx-error 'define "bad syntax" def #f))]))]
        ;; define-syntax
        [(and (keyword-binding? binding)
              (eq? 'define-syntax (keyword-binding-name binding)))
-        (with-handlers ([exn:fail? (lambda (_e) (stx-error 'define-syntax "bad syntax" def #f))])
-          (define elems (stx-list def))
-          (define var-stx (list-ref elems 1))
-          (define macrot-stx (list-ref elems 2))
-          (define m-binding (macro-binding var-stx macrot-stx scp))
-          (scope-bind! scp var-stx m-binding)
-          (record-all-pvar-resolutions-for-macrot! macrot-stx scp)
-          `(begin))]
+        (with-stx-error-handling
+          (match def
+            [(stx-quote (define-syntax ,var-stx ,macrot-stx))
+             (unless (identifier? var-stx)
+               (raise (stx-error 'define-syntax "bad syntax" def var-stx)))
+             (define m-binding (macro-binding var-stx macrot-stx scp))
+             (scope-bind! scp var-stx m-binding)
+             (record-all-pvar-resolutions-for-macrot! macrot-stx scp)
+             `(begin)]
+            [_ (raise (stx-error 'define-syntax "bad syntax" def #f))]))]
        ;; begin
        [(and (keyword-binding? binding)
              (eq? 'begin (keyword-binding-name binding)))
@@ -357,19 +366,22 @@
        ;; #%expression
        [(and (keyword-binding? binding)
              (eq? '#%expression (keyword-binding-name binding)))
-        (with-handlers ([exn:fail? (lambda (_e) (stx-error '#%expression "bad syntax" def #f))])
-          (define expr-stx (list-ref (stx-list def) 1))
-          `(#%expression ,expr-stx))]
+        (with-stx-error-handling
+          (match def
+            [(stx-quote (#%expression ,expr-stx))
+             `(#%expression ,expr-stx)]
+            [_ (raise (stx-error '#%expression "bad syntax" def #f))]))]
        ;; macro application
        [(macro-binding? binding)
-        (define who (identifier-symbol (macro-binding-site binding)))
-        (with-handlers ([exn:fail? (lambda (_e) (stx-error who "bad syntax" def #f))])
+        (with-stx-error-handling
           (define-values (marked-stx disjoined-scp) (expand-macro head-stx def scp))
           (with-disjoin (expand-def-pass1 marked-stx disjoined-scp) disjoined-scp))]
-       ;; unbound or variable in head position - syntax error
-       [(or (unbound? binding) (var-binding? binding))
-        (stx-error 'expand "not a procedure or syntax" def head-stx)]
-       [else (error 'expand-def-pass1 "unexpected form: ~a" def)])]))
+       ;; unbound in head position - pass through the stx-error from scope-resolve
+       [(stx-error? binding) binding]
+       ;; variable in head position - not callable
+       [(var-binding? binding)
+        (stx-error head-stx "not a procedure or syntax" def head-stx)]
+       [else (stx-error #f "unexpected form" def head-stx)])]))
 
 ;; expand-def-pass2 : Pass1Def Scope -> XDef
 ;; Second pass of definition expansion: expands all expressions.
@@ -396,10 +408,11 @@
 ;; Expands a macro application.
 ;; Returns the instantiated template and a disjoin scope for continuing expansion.
 (define (expand-macro mname expr use-scp)
+  (define who (identifier-symbol mname))
   (define binding (scope-resolve use-scp mname))
   (match-define (macro-binding _ macrot def-scp) binding)
   (define-values (penv tmpl)
-    (select-syntax-rule macrot expr def-scp use-scp))
+    (select-syntax-rule who macrot expr def-scp use-scp))
   (define def-mark (fresh-def-mark))
   (define expanded-tmpl (expand-template tmpl penv def-mark))
   (define introduced-defn-scp (new-scope def-scp))
@@ -487,22 +500,22 @@
 ;; Syntax-Rules Matching
 ;; ============================================================
 
-;; select-syntax-rule : Syntax Syntax Scope Scope -> (values PatternEnv Syntax)
+;; select-syntax-rule : Symbol Syntax Syntax Scope Scope -> (values PatternEnv Syntax)
 ;; Selects the first matching clause from a syntax-rules transformer.
 ;; Returns the pattern environment and the template to instantiate.
-(define (select-syntax-rule macrot expr def-scp use-scp)
+(define (select-syntax-rule who macrot expr def-scp use-scp)
   ;; macrot is (syntax-rules (literal ...) clause ...)
   (match (stx-list macrot)
     [(list _ literals-stx clauses ...)
      (define literal-ids (stx-list literals-stx))
      (define is-literal? (make-is-literal? literal-ids))
      (define literal-match? (make-literal-match? def-scp use-scp))
-     (try-clauses clauses expr is-literal? literal-match?)]))
+     (try-clauses who clauses expr is-literal? literal-match?)]))
 
-;; try-clauses : [Listof Clause] Syntax (Id -> Bool) (Id Id -> Bool) -> (values PatternEnv Syntax)
+;; try-clauses : Symbol [Listof Clause] Syntax (Id -> Bool) (Id Id -> Bool) -> (values PatternEnv Syntax)
 ;; Tries each clause in order until one matches.
 ;; A Clause is (list Pattern Template).
-(define (try-clauses clauses expr is-literal? literal-match?)
+(define (try-clauses who clauses expr is-literal? literal-match?)
   (match clauses
     [(cons clause rest)
      (match (stx-list clause)
@@ -510,8 +523,8 @@
         (define maybe-penv (match-top-pattern pat expr is-literal? literal-match?))
         (if maybe-penv
             (values maybe-penv tmpl)
-            (try-clauses rest expr is-literal? literal-match?))])]
-    ['() (error 'syntax-rules "no pattern matched")]))
+            (try-clauses who rest expr is-literal? literal-match?))])]
+    ['() (raise (stx-error who "no pattern matched" expr #f))]))
 
 ;; match-top-pattern : Pattern Syntax (Id -> Bool) (Id Id -> Bool) -> (or PatternEnv #f)
 ;; Matches a top-level pattern against syntax.
@@ -584,9 +597,9 @@
   (lambda (literal-id target-id)
     (define literal-binding (scope-resolve-internal def-scp literal-id))
     (define target-binding (scope-resolve-internal use-scp target-id))
-    (or (and (not (unbound? literal-binding)) (not (unbound? target-binding))
+    (or (and (not (stx-error? literal-binding)) (not (stx-error? target-binding))
              (eq? literal-binding target-binding))
-        (and (unbound? literal-binding) (unbound? target-binding)
+        (and (stx-error? literal-binding) (stx-error? target-binding)
              (eq? (identifier-symbol literal-id) (identifier-symbol target-id))))))
 
 ;; ============================================================
@@ -598,22 +611,24 @@
 (define (new-scope parent)
   (scope parent (make-hash)))
 
-;; scope-resolve : Scope Identifier -> (or Binding unbound)
+;; scope-resolve : Scope Identifier -> (or Binding stx-error)
 ;; Resolves an identifier by traversing parent edges in the scope graph.
 ;; Records the resolution in the LSP tables.
+;; Returns a stx-error if the identifier is unbound.
 (define (scope-resolve scp id)
   (define binding (scope-resolve-internal scp id))
   ;; Record the resolution for LSP
-  (record-resolution! id (if (unbound? binding) #f binding) scp)
+  (record-resolution! id (if (stx-error? binding) #f binding) scp)
   binding)
 
-;; scope-resolve-internal : Scope Identifier -> (or Binding unbound)
+;; scope-resolve-internal : Scope Identifier -> (or Binding stx-error)
 ;; Internal resolution without recording (to avoid double-recording).
+;; Returns a stx-error if the identifier is unbound.
 (define (scope-resolve-internal scp id)
   (define key (identifier->key id))
   (match scp
     [(core-scope core-bindings)
-     (hash-ref core-bindings key (unbound))]
+     (hash-ref core-bindings key (lambda () (stx-error (identifier-symbol id) "unbound identifier" id #f)))]
     [(scope parent bindings)
      (hash-ref bindings key (lambda () (scope-resolve-internal parent id)))]
     [(disjoin def-mark def-scp use-scp)
