@@ -167,7 +167,7 @@
    ;; 'a' in (let ([a q]) a) is template-introduced, not a pvar.
    ;; After expansion it becomes a real let binding, so goto-def on the
    ;; reference (a3) resolves to the binding site (a2), not to any pvar.
-   ;; a2 (char 47): template 'a' binding site in (let ([a q])
+   ;; a2 (char 47): template 'a' binding site in (let ([a q]) a)
    ;; a3 (char 53): template 'a' reference in body a
    (define source "(let-syntax ([m (syntax-rules () [(_ q) (let ([a q]) a)])]) (m 5))")
    ;; a3 resolves to a2 — the let binding, not a pattern variable

@@ -1,5 +1,5 @@
 
-## migrated to beads
+## migrated to GitHub issues
 
 - grammar-informed early subexpression expansion for incomplete macro uses
   - treason-idb (blocked on treason-94y)
