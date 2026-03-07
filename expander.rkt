@@ -117,13 +117,16 @@
   (with-handlers ([stx-error? (lambda (err) err)])
     body ...))
 
+;; stx-error? -> void?
 (define (raise-and-record-stx-error err)
   (record-stx-error! err)
   (raise err))
 
+;; stx-error? -> void?
 (define (record-stx-error! err)
-  (define errs (expander-state-stx-errors (current-expander-state)))
-  (set-add! errs err))
+  (when (current-expander-state)
+    (define errs (expander-state-stx-errors (current-expander-state)))
+    (set-add! errs err)))
 
 ;; ------------------------------------------------------------
 ;; LSP State
@@ -936,7 +939,7 @@
 ;; Returns #t if the span contains the given position.
 (define (span-contains? spn pos)
   (and (loc<=? (span-start spn) pos)
-       (loc<? pos (span-end spn))))
+       (loc<=? pos (span-end spn))))
 
 ;; loc<=? : Loc Loc -> Boolean
 ;; Returns #t if loc1 is before or at loc2.

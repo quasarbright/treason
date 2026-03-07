@@ -73,6 +73,12 @@
     (autocomplete source (find-position source "q" 3))
     (list (hasheq 'label "my-let") (hasheq 'label "q"))))
 
+  (test-case "autocomplete at end of identifier"
+    (define source "(let ([x 1]) (let ([y x]) 2))")
+    (check-equal?
+     (autocomplete source (hash 'line 0 'character 23))
+     (list (hasheq 'label "x"))))
+
   ;; ============================================================
   ;; Pattern variable tests (issue #3)
   ;; ============================================================
