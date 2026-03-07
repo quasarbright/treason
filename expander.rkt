@@ -656,6 +656,17 @@
          (scope-bind! def-scp (drop-top-mark id) bnd)
          (scope-bind! use-scp id bnd))]))
 
+;; scope-snapshot : Scope -> Scope
+;; Creates a deep copy of a scope, capturing the current bindings as an immutable snapshot.
+;; Prevents future scope-bind! mutations from affecting this copy.
+(define (scope-snapshot scp)
+  (match scp
+    [(core-scope _) scp]  ; immutable hash, safe to share
+    [(scope parent bindings)
+     (scope (scope-snapshot parent) (hash-copy bindings))]
+    [(disjoin def-mark def-scp use-scp)
+     (disjoin def-mark (scope-snapshot def-scp) (scope-snapshot use-scp))]))
+
 ;; ============================================================
 ;; Identifier Operations
 ;; ============================================================
@@ -744,9 +755,10 @@
   (define state (current-expander-state))
   ;; TODO if state is #f, we should error instead of silently failing
   (when (and ref-spn state)
-    ;; Record the resolution
+    ;; Record the resolution with a snapshot of the scope to prevent future
+    ;; scope-bind! mutations from affecting autocomplete results (issue #45).
     (hash-cons! (expander-state-resolutions state) ref-spn
-                (resolution binding ref-stx scp))
+                (resolution binding ref-stx (scope-snapshot scp)))
     ;; If binding has a surface site, record in references table
     (define site (and binding (binding-site binding)))
     (define def-spn (and site (stx-span site)))

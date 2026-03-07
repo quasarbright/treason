@@ -1680,34 +1680,29 @@
    (for ([sample sample-programs])
      (define name (car sample))
      (define source (cdr sample))
-     ;; Some samples have macros that define other names. Autocomplete at the
-     ;; macro call site suggests those names, but substituting one in removes
-     ;; the very call that defines it, causing an unbound error. Bug: issue #45.
-     (if (memq name '(macro-defines-macro fig17))
-         (displayln (format "skipping ~a in autocomplete soundness check, ref issue #45" name))
-         (for ([id-pos (find-all-identifier-positions source)])
-           (define sym (car id-pos))
-           (define pos (cdr id-pos))
-           ;; Skip binding sites - only check reference sites
-           ;; A position is a binding site if goto-definition returns itself
-           (define binding-sites (goto-definition source pos))
-           (define is-binding-site?
-             (and (not (null? binding-sites))
-                  (let* ([first-binding (car binding-sites)]
-                         [binding-range (hash-ref first-binding 'range)]
-                         [binding-start (hash-ref binding-range 'start)])
-                    (and (= (hash-ref binding-start 'line) (hash-ref pos 'line))
-                         (= (hash-ref binding-start 'character) (hash-ref pos 'character))))))
-           (unless is-binding-site?
-             (define completions (autocomplete source pos))
-             (for ([completion completions])
-               (define completion-name (hash-ref completion 'label))
-               (define modified-source (replace-identifier-at source pos sym completion-name))
-               (define unbound-error? (has-unbound-error-at? modified-source pos))
-               (check-false
-                unbound-error?
-                (format "Autocomplete soundness failed for ~a in ~a: autocomplete(~a) suggested ~s but it's unbound in modified source"
-                        sym name pos completion-name))))))))
+     (for ([id-pos (find-all-identifier-positions source)])
+       (define sym (car id-pos))
+       (define pos (cdr id-pos))
+       ;; Skip binding sites - only check reference sites
+       ;; A position is a binding site if goto-definition returns itself
+       (define binding-sites (goto-definition source pos))
+       (define is-binding-site?
+         (and (not (null? binding-sites))
+              (let* ([first-binding (car binding-sites)]
+                     [binding-range (hash-ref first-binding 'range)]
+                     [binding-start (hash-ref binding-range 'start)])
+                (and (= (hash-ref binding-start 'line) (hash-ref pos 'line))
+                     (= (hash-ref binding-start 'character) (hash-ref pos 'character))))))
+       (unless is-binding-site?
+         (define completions (autocomplete source pos))
+         (for ([completion completions])
+           (define completion-name (hash-ref completion 'label))
+           (define modified-source (replace-identifier-at source pos sym completion-name))
+           (define unbound-error? (has-unbound-error-at? modified-source pos))
+           (check-false
+            unbound-error?
+            (format "Autocomplete soundness failed for ~a in ~a: autocomplete(~a) suggested ~s but it's unbound in modified source"
+                    sym name pos completion-name)))))))
 )
 
 
