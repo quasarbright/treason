@@ -1156,6 +1156,34 @@
    (check-true (for/or ([d diags])
                  (regexp-match? #rx"unexpected end of input" (hash-ref d 'message "")))
                "expected diagnostic message to mention unexpected end of input"))
+
+  (test-case
+   "error: LSP operations return graceful results after parse error"
+   ;; After opening a document that fails to parse, all LSP operations should
+   ;; return graceful empty results rather than erroring.
+   (define source "(let ([x 1])")  ; unclosed paren — parse error
+   (define any-pos (hasheq 'line 0 'character 0))
+   (define server (make-test-server source))
+   ;; documentSymbol: empty list (no symbols in a broken file)
+   (check-equal?
+    (send server textDocument/documentSymbol
+          (hasheq 'textDocument (hasheq 'uri test-uri)))
+    '())
+   ;; definition: null (can't resolve in a broken file)
+   (check-equal?
+    (send server textDocument/definition
+          (hasheq 'textDocument (hasheq 'uri test-uri) 'position any-pos))
+    'null)
+   ;; references: null (can't find references in a broken file)
+   (check-equal?
+    (send server textDocument/references
+          (hasheq 'textDocument (hasheq 'uri test-uri) 'position any-pos))
+    'null)
+   ;; completion: empty list (no completions in a broken file)
+   (check-equal?
+    (send server textDocument/completion
+          (hasheq 'textDocument (hasheq 'uri test-uri) 'position any-pos))
+    '()))
   )
 
 ;; ============================================================

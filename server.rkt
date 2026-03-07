@@ -88,13 +88,18 @@ do we want actual types instead of json?
     
     (define-remote/notification textDocument/publishDiagnostics)))
 
+;; A ParseErrorResult is a (parse-error-result)
+(struct parse-error-result [] #:transparent)
+;; Sentinel stored in both `text-documents` and `results` when parsing fails.
+;; LSP query handlers return graceful empty results when they encounter this.
+
 (define server%
   (class object%
     (super-new)
 
     ;; maps uris to text documents
     (define text-documents (make-hash))
-    ;; maps uris to expander-results
+    ;; maps uris to expander-results (or parse-error-result on parse error)
     (define results (make-hash))
 
     (init-field client)
@@ -119,41 +124,47 @@ do we want actual types instead of json?
       (match parameters
         [(hash* ['textDocument (hash* ['uri uri])])
          (define result (get-result uri 'textDocument/documentSymbol))
-         (for/list ([x (get-all-surface-binding-sites result)])
-           (hash 'name (symbol->string (stx-e x))
-                 'kind SymbolKind/Variable
-                 'location (span->location (stx-span x))))]))
+         (if (parse-error-result? result)
+             '()
+             (for/list ([x (get-all-surface-binding-sites result)])
+               (hash 'name (symbol->string (stx-e x))
+                     'kind SymbolKind/Variable
+                     'location (span->location (stx-span x)))))]))
+
     
     (define/public (textDocument/definition parameters)
       (match parameters
         [(hash* ['textDocument (hash* ['uri uri])]
                 ['position pos])
          (define result (get-result uri 'textDocument/definition))
-         (define lc (position->loc pos uri))
-         (define spans (goto-definition result lc))
-         (for/list ([spn spans])
-           (span->location spn))]))
-    
+         (if (parse-error-result? result)
+             'null
+             (let ([lc (position->loc pos uri)])
+               (for/list ([spn (goto-definition result lc)])
+                 (span->location spn))))]))
+
     (define/public (textDocument/references parameters)
       (match parameters
         [(hash* ['textDocument (hash* ['uri uri])]
                 ['position pos])
          (define result (get-result uri 'textDocument/references))
-         (define lc (position->loc pos uri))
-         (define spans (find-references result lc))
-         (for/list ([spn spans])
-           (span->location spn))]))
-    
+         (if (parse-error-result? result)
+             'null
+             (let ([lc (position->loc pos uri)])
+               (for/list ([spn (find-references result lc)])
+                 (span->location spn))))]))
+
     (define/public (textDocument/completion parameters)
       (match parameters
         [(hash* ['textDocument (hash* ['uri uri])]
                 ['position pos])
          (define result (get-result uri 'textDocument/completion))
-         (define lc (position->loc pos uri))
-         (define names (autocomplete result lc))
-         (for/list ([name names]
-                    #:unless (member name keywords))
-           (hasheq 'label (symbol->string name)))]))
+         (if (parse-error-result? result)
+             '()
+             (let ([lc (position->loc pos uri)])
+               (for/list ([name (autocomplete result lc)]
+                          #:unless (member name keywords))
+                 (hasheq 'label (symbol->string name)))))]))
 
     (define/public (textDocument/didOpen parameters)
       (define text-document (hash-ref parameters 'textDocument))
@@ -168,6 +179,7 @@ do we want actual types instead of json?
     (define/private (analyze-and-store! uri text)
       (with-handlers ([exn:fail:parse?
                        (lambda (err)
+                         (hash-set! results uri (parse-error-result))
                          (send client textDocument/publishDiagnostics
                                (hasheq 'uri uri
                                        'diagnostics (list (parse-error->diagnostic err)))))])
@@ -188,24 +200,13 @@ do we want actual types instead of json?
            (hash-ref text-documents
                      uri
                      (lambda () (error 'textDocument/didChange "unknown document: ~a" uri))))
-         (define old-text (hash-ref text-document 'text))
-         (define new-text
-           (for/fold ([new-text old-text])
-                     ([change changes])
-             (match change
-               [(hash* ['text text] ['range range #:default #f])
-                (match range
-                  [(hash* ['start (hash* ['line start-line] ['character start-col])]
-                          ['end (hash* ['line end-line] ['character end-col])])
-                   (define start-index (position->index new-text start-line start-col))
-                   (define dest (string-copy new-text))
-                   (string-copy! dest text start-index)]
-                  [_ text])])))
+         ;; Full sync: the last change always contains the complete new text.
+         (define new-text (hash-ref (last changes) 'text))
          (define new-text-document
            (hash-set (hash-set text-document 'text new-text)
                      'version version))
          (hash-set! text-documents uri new-text-document)
-         (analyze-and-store! uri (hash-ref new-text-document 'text))]))
+         (analyze-and-store! uri new-text)]))
     
     (define/public (textDocument/didClose parameters)
       (match parameters
