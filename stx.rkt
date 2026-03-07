@@ -58,7 +58,7 @@
 (define (stx-car syn)
   (match syn
     [(stx (cons a _) _ _) a]
-    [(stx (list a _ ...) _ _) a]))
+    [(cons a _) a]))
 
 ;; stx-cdr : Stx -> Stx or (Listof Stx)
 ;; Gets the rest of a stx list or pair.
@@ -67,13 +67,7 @@
 (define (stx-cdr syn)
   (match syn
     [(stx (cons _ d) _ _) d]
-    [(stx (list _ rest ...) spn marks) (stx rest spn marks)]))
-
-;; stx-list : Stx -> (Listof Stx)
-;; Converts a stx list to a Racket list.
-(define (stx-list syn)
-  (match syn
-    [(stx (? list? elems) _ _) elems]))
+    [(cons _ d) d]))
 
 ;; ============================================================
 ;; Errors

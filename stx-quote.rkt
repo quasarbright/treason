@@ -15,7 +15,7 @@
   ;; that means lists need to be the same structure and literal symbols must be the eq?.
   stx-rebuild
   (contract-out
-   [stx->datum (-> stx? any/c)]))
+   [stx->datum (-> (or/c cons? null? stx?) any/c)]))
 (module+ test (require rackunit))
 (require (for-syntax syntax/parse)
          racket/file
@@ -32,12 +32,17 @@
          #:datum-literals (stx-unquote unquote)
          [(stx-unquote pat) #'pat]
          [(unquote pat) #'pat]
-         [(datum ...)
-          ;; Convert list pattern to list pattern wrapped in stx
-          (let ([datum-pats (map loop (attribute datum))])
-            #`(stx (list #,@datum-pats) _ _))]
+         [() #'(or (list) (stx (list) _ _))]
+         [(a (~datum ...) . d)
+          (define/syntax-parse a^ (loop #'a))
+          (define/syntax-parse d^ (loop #'d))
+          #'(or (stx (list* a^ (... ...) d^) _ _)
+                (list* a^ (... ...) d^))]
          [(a . d)
-          #`(stx (cons #,(loop (attribute a)) #,(loop (attribute d))) _ _)]
+          (define/syntax-parse a^ (loop #'a))
+          (define/syntax-parse d^ (loop #'d))
+          #'(or (stx (cons a^ d^) _ _)
+                (cons a^ d^))]
          [(~datum ...) datum]
          [atom #'(? (stx-eq-to-datum? 'atom))]))])
   (syntax-parser
@@ -52,7 +57,12 @@
   (check-match (stx-quote (let ([x 2]) x))
                (stx-quote (let ([,_x ,_rhs]) ,_body)))
   (check-match (stx-quote (let ([x 2]) x))
-               (stx-quote (let ([x 2]) x))))
+               (stx-quote (let ([x 2]) x)))
+  (check-match (stx-quote ((a) (b) (c)))
+               (stx-quote ((,(? identifier?)) ...)))
+  (check-match (stx-quote (a . (b)))
+               (stx-quote (a b)))
+  )
 
 ;; recursive quasisyntax/loc
 (define-syntax stx-rebuild
@@ -105,18 +115,12 @@
 
 ;; stx? -> any/c
 (define (stx->datum syn)
-  (define e (stx-e syn))
-  (cond
-    [(list? e)
-     (map stx->datum e)]
-    [(pair? e)
-     ;; Improper list / dotted pair
-     (let loop ([p e])
-       (match p
-         [(cons a (? pair? d)) (cons (stx->datum a) (loop d))]
-         [(cons a d) (cons (stx->datum a) (stx->datum d))]))]
-    [(null? e) '()]
-    [else e]))
+  (match syn
+    [(stx-quote (,a . ,d))
+     (cons (stx->datum a) (stx->datum d))]
+    [(stx-quote ())
+     '()]
+    [_ (stx-e syn)]))
 
 ;; syntax? -> string?
 ;; return the contents of the file that syn came from

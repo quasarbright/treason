@@ -446,7 +446,10 @@ do we want actual types instead of json?
 
 ;; stx-error? -> hasheq?
 (define (stx-error->diagnostic err)
-  (hasheq 'range (span->range (stx-error-span err))
+  (define spn (stx-error-span err))
+  (unless (span? spn)
+    (error 'stx-error->diagnostic "stx-error doesn't have a span: ~a" spn))
+  (hasheq 'range (span->range spn)
           'severity DiagnosticSeverity/Error
           'source "treason"
           'message (stx-error-diagnostic-message err)))

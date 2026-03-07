@@ -238,7 +238,7 @@
        [(keyword-binding? binding) (identifier-symbol id)]
        [(stx-error? binding) binding]
        [else (stx-error 'expand-expr "unexpected binding type" expr #f)])]
-    [(app stx-e (cons head-stx _))
+    [(stx-quote (,head-stx . ,args))
      #:when (identifier? head-stx)
      (define binding (scope-resolve scp head-stx))
      (cond
@@ -287,19 +287,19 @@
           (expand-expr marked-stx disjoined-scp))]
        ;; unbound in head position - pass through the stx-error from scope-resolve
        [(stx-error? binding)
-        (for ([arg (stx-cdr expr)])
+        (for ([arg args])
           (when (identifier? arg)
             (scope-resolve scp arg)))
         binding]
        ;; variable in head position - not callable
        [(var-binding? binding)
-        (for ([arg (stx-cdr expr)])
+        (for ([arg args])
           (when (identifier? arg)
             (scope-resolve scp arg)))
         (stx-error (identifier-symbol head-stx) "not a procedure or syntax" expr head-stx)]
        [else (stx-error #f "unexpected form" expr head-stx)])]
     ;; Non-identifier in head position
-    [(app stx-e (cons head-stx _))
+    [(stx-quote (,head-stx . ,_))
      (stx-error #f "not a procedure or syntax" expr head-stx)]))
 
 ;; ============================================================
@@ -327,7 +327,7 @@
 ;; First pass of definition expansion: discovers bindings and expands macros.
 (define (expand-def-pass1 def scp)
   (match def
-    [(app stx-e (cons head-stx _))
+    [(stx-quote (,head-stx . ,_))
      #:when (identifier? head-stx)
      (define binding (scope-resolve scp head-stx))
      (cond
@@ -470,9 +470,7 @@
       [(? identifier? id)
        (unless (or (is-literal? id) (eq? (identifier-symbol id) '_))
          (scope-bind! pvar-scp id (pattern-variable-binding id)))]
-      [(app stx-e (? list? elems))
-       (for ([elem elems]) (loop elem))]
-      [(app stx-e (cons a d))
+      [(stx-quote (,a . ,d))
        (loop a)
        (loop d)]
       [_ (void)]))
@@ -489,10 +487,7 @@
      (define bnd (scope-resolve-internal pvar-scp id))
      (when (pattern-variable-binding? bnd)
        (record-resolution! id bnd pvar-scp))]
-    [(app stx-e (? list? elems))
-     (for ([elem elems])
-       (record-pvar-resolutions! elem pvar-scp))]
-    [(app stx-e (cons a d))
+    [(stx-quote (,a . ,d))
      (record-pvar-resolutions! a pvar-scp)
      (record-pvar-resolutions! d pvar-scp)]
     [_ (void)]))
@@ -531,9 +526,7 @@
 ;; Returns a PatternEnv on success, #f on failure.
 (define (match-top-pattern pat expr is-datum-literal?)
   (match* (pat expr)
-    [((app stx-e (list _ pd ...)) (app stx-e (list _ ed ...)))
-     (match-pattern-list pd ed is-datum-literal?)]
-    [((app stx-e (cons _ pd)) (app stx-e (cons _ ed)))
+    [((stx-quote (,_ . ,pd)) (stx-quote (,_ . ,ed)))
      (match-pattern pd ed is-datum-literal?)]
     [(_ _) #f]))
 
@@ -559,25 +552,23 @@
      #:when (is-datum-literal? lit)
      (and (equal? (stx->datum lit) (stx->datum target-id))
           (hash))]
-    ;; pvar: matches any syntax, binds it using IdentifierKey
     [((? identifier? pvar) syn)
      #:when (not (is-datum-literal? pvar))
      (hash (identifier->key pvar) syn)]
-    ;; datum literal: must be equal
-    [((app stx-e (? number? v1)) (app stx-e (? number? v2)))
-     #:when (= v1 v2)
-     (hash)]
-    ;; list: match element-wise
-    [((app stx-e (? list? p-elems)) (app stx-e (? list? e-elems)))
-     (match-pattern-list p-elems e-elems is-datum-literal?)]
-    ;; cons (dotted pair): match both parts and combine environments
-    [((app stx-e (cons pa pd)) (app stx-e (cons ea ed)))
-     (let ([resa (match-pattern pa ea is-datum-literal?)])
-       (and resa
-            (let ([resd (match-pattern pd ed is-datum-literal?)])
-              (and resd
-                   (hash-union resa resd)))))]
-    [(_ _) #f]))
+    [((stx-quote (,pa . ,pd)) (stx-quote (,ea . ,ed)))
+     (=> fail)
+     (define penv-a (match-pattern pa ea is-datum-literal?))
+     (unless penv-a (fail))
+     (define penv-d (match-pattern pd ed is-datum-literal?))
+     (unless penv-d (fail))
+     (hash-union penv-a penv-d
+                 #:combine (lambda (ea ed)
+                             (if (syntax-same-for-binding? ea ed)
+                                 ea
+                                 (fail))))]
+    [(_ _)
+    (and (equal? (stx->datum pat) (stx->datum expr))
+         (hash))]))
 
 ;; make-is-literal? : [Listof Identifier] -> (Identifier -> Boolean)
 ;; Creates a predicate that checks if an identifier is a literal
@@ -697,6 +688,20 @@
   (match id
     [(stx e spn (cons _ marks-rest))
      (stx e spn marks-rest)]))
+
+;; Syntax Syntax -> Boolean
+;; Are the two syntaxes the same up to datums and marks?
+(define (syntax-same-for-binding? a b)
+  (match* (a b)
+    [((stx-quote (,aa . ,ad)) (stx-quote (,ba . ,bd)))
+     (and (syntax-same-for-binding? aa ba)
+          (syntax-same-for-binding? ad bd))]
+    [((stx-quote ()) (stx-quote ()))
+     #t]
+    [((? identifier?) (? identifier?))
+     (bound-identifier=? a b)]
+    [(_ _)
+     (equal? (stx->datum a) (stx->datum b))]))
 
 ;; bound-identifier=? : Identifier Identifier -> Boolean
 ;; Returns #t if two identifiers have the same symbol and marks.
@@ -1125,12 +1130,10 @@
    '(let ([a1 2]) a1))
   
   ;; dotted (a . (b)) = (a b)
-  (displayln "skipping dot paren test")
-  #;
   (check-match
    (expand
-    '(#%expression . (2)))
-   '2)
+    '(block (#%expression . (2))))
+   '(block (#%expression 2)))
   
   ;; fault-tolerant block
   (check-match
