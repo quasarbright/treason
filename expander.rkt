@@ -381,7 +381,9 @@
        ;; variable in head position - not callable
        [(var-binding? binding)
         (stx-error head-stx "not a procedure or syntax" def head-stx)]
-       [else (stx-error #f "unexpected form" def head-stx)])]))
+       [else (stx-error #f "unexpected form" def head-stx)])]
+    ;; bare non-list (e.g. a bare identifier) - not a valid definition form
+    [_ (stx-error #f "not a definition form" def def)]))
 
 ;; expand-def-pass2 : Pass1Def Scope -> XDef
 ;; Second pass of definition expansion: expands all expressions.
@@ -1141,5 +1143,10 @@
        (define x 2)))
    `(block
       ,(? stx-error?)
-      (define x0 2))))
+      (define x0 2)))
+
+  ;; bare identifier in block - should produce stx-error, not crash
+  (check-match
+   (expand '(block x))
+   `(block ,(? stx-error?))))
 
