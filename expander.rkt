@@ -104,12 +104,11 @@
 ;; parent : Scope
 ;; bindings : [MutableHashOf IdentifierKey Binding]
 
-;; A disjoin is a scope vertex with two marked parent edges.
-(struct disjoin [mark1 scope1 mark2 scope2] #:transparent)
-;; mark1 : Mark - definition-site mark
-;; scope1 : Scope - definition-site scope
-;; mark2 : Mark - use-site mark
-;; scope2 : Scope - use-site scope
+;; A disjoin is a scope vertex with one marked def-site edge and one unmarked use-site edge.
+(struct disjoin [def-mark def-scp use-scp] #:transparent)
+;; def-mark : Mark - definition-site mark
+;; def-scp : Scope - definition-site scope (for macro-introduced identifiers)
+;; use-scp : Scope - use-site scope (for pattern variable substitutions, no mark)
 
 ;; An unbound is a sentinel value indicating that resolution failed.
 ;; TODO just use stx-error
@@ -395,34 +394,34 @@
 
 ;; expand-macro : Identifier Syntax Scope -> (values Syntax Scope)
 ;; Expands a macro application.
-;; Returns the expanded syntax (with marks applied) and a disjoin scope
-;; for continuing expansion.
-;;
-;; The expansion process:
-;; 1. Look up the macro-closure for the macro name.
-;; 2. Match the input against syntax-rules patterns to get a pattern env and template.
-;; 3. Create fresh definition-site and use-site marks.
-;; 4. Project the template into def-site and use-site portions.
-;; 5. Mark each projection with its corresponding mark.
-;; 6. Combine the projections back together.
-;; 7. Create a disjoin scope with marked edges to def-site and use-site scopes.
+;; Returns the instantiated template and a disjoin scope for continuing expansion.
 (define (expand-macro mname expr use-scp)
   (define binding (scope-resolve use-scp mname))
   (match-define (macro-binding _ macrot def-scp) binding)
   (define-values (penv tmpl)
     (select-syntax-rule macrot expr def-scp use-scp))
   (define def-mark (fresh-def-mark))
-  (define use-mark (fresh-use-mark))
-  (define def-proj (project-def tmpl penv))
-  (define use-proj (project-use tmpl penv))
-  (define marked-def (mark-syntax def-proj def-mark))
-  (define marked-use (mark-syntax use-proj use-mark))
-  (define final-stx (combine-projections marked-def marked-use))
-  ;; Create disjoin scope
+  (define expanded-tmpl (expand-template tmpl penv def-mark))
   (define introduced-defn-scp (new-scope def-scp))
-  (define disjoined-scp (disjoin def-mark introduced-defn-scp
-                                 use-mark use-scp))
-  (values final-stx disjoined-scp))
+  (define disjoined-scp (disjoin def-mark introduced-defn-scp use-scp))
+  (values expanded-tmpl disjoined-scp))
+
+;; expand-template : Syntax PatternEnv Mark -> Syntax
+;; Instantiates a template: substitutes pattern variable references with
+;; use-site syntax from penv; marks all other identifiers with def-mark.
+(define (expand-template tmpl penv def-mark)
+  (match tmpl
+    [(? identifier? id)
+     (if (hash-has-key? penv (identifier->key id))
+         (hash-ref penv (identifier->key id))   ; use-site syntax, keep as-is
+         (mark-syntax tmpl def-mark))]           ; macro-introduced, mark it
+    [(stx (? list? elems) spn marks)
+     (stx (map (lambda (t) (expand-template t penv def-mark)) elems) spn marks)]
+    [(stx (cons a d) spn marks)
+     (stx (cons (expand-template a penv def-mark)
+                (expand-template d penv def-mark))
+          spn marks)]
+    [_ tmpl]))  ; numbers, booleans, etc. pass through
 
 ;; ============================================================
 ;; Pattern Variable LSP Resolution
@@ -483,89 +482,6 @@
      (record-pvar-resolutions! a pvar-scp)
      (record-pvar-resolutions! d pvar-scp)]
     [_ (void)]))
-
-;; ============================================================
-;; Template Projection and Combination
-;; ============================================================
-
-;; The projection mechanism separates a template into two "views":
-;; - project-def: keeps template structure, replaces pattern variable positions with '_
-;; - project-use: keeps pattern variable substitutions, replaces template literals with '_
-;;
-;; Each projection is then marked with its corresponding mark (def or use).
-;; Finally, combine-projections merges them back together.
-;;
-;; This ensures that identifiers from the macro definition (template literals)
-;; get the definition-site mark, while identifiers from the macro use
-;; (substituted from pattern variables) get the use-site mark.
-
-;; project-def : Syntax PatternEnv -> Projection
-;; Creates the definition-site projection of a template.
-;; Pattern variable positions become '_.
-;; We preserve surface spans on macro-introduced syntax.
-(define (project-def tmpl penv)
-  (match tmpl
-    [(stx e spn marks)
-     (cond
-       [(and (identifier? tmpl) (hash-has-key? penv (identifier->key tmpl)))
-        '_]  ; will be filled by use-site syntax
-       [(list? e)
-        (stx (map (lambda (t) (project-def t penv)) e)
-             spn marks)]
-       [(pair? e)
-        (stx (cons (project-def (car e) penv)
-                   (project-def (cdr e) penv))
-             spn marks)]
-       [(identifier? tmpl)
-        (stx e spn marks)]
-       [else
-        (stx e spn marks)])]
-    [_ tmpl]))  ; numbers pass through
-
-;; project-use : Syntax PatternEnv -> Projection
-;; Creates the use-site projection of a template.
-;; Pattern variables are replaced with their matched syntax.
-(define (project-use tmpl penv)
-  (match tmpl
-    [(stx e _ _)
-     (cond
-       [(and (identifier? tmpl) (hash-has-key? penv (identifier->key tmpl)))
-        (hash-ref penv (identifier->key tmpl))]
-       [(list? e)
-        (map (lambda (t) (project-use t penv)) e)]
-       [(pair? e)
-        (cons (project-use (car e) penv) (project-use (cdr e) penv))]
-       [else '_])]
-    ['() '()]
-    [_ '_]))
-
-;; combine-projections : Projection Projection -> Syntax
-;; Merges two projections back into a single syntax object.
-;; '_ in one projection is filled by the corresponding part of the other.
-(define (combine-projections proj1 proj2)
-  (match* (proj1 proj2)
-    [('_ proj2) proj2]  ; use-site syntax keeps its span
-    [(proj1 '_) proj1]  ; template syntax has span from template
-    [(same same) same]
-    ;; stx list + plain list (from project-use)
-    [((stx (? list? p1elems) spn1 marks1) (? list? p2elems))
-     (stx (map combine-projections p1elems p2elems) spn1 marks1)]
-    [((? list? p1elems) (stx (? list? p2elems) spn2 marks2))
-     (stx (map combine-projections p1elems p2elems) spn2 marks2)]
-    [((? list? p1elems) (? list? p2elems))
-     (map combine-projections p1elems p2elems)]
-    ;; cons pairs (dotted)
-    [((stx (cons p1a p1d) spn1 marks1) (cons p2a p2d))
-     (stx (cons (combine-projections p1a p2a)
-                (combine-projections p1d p2d))
-          spn1 marks1)]
-    [((cons p1a p1d) (stx (cons p2a p2d) spn2 marks2))
-     (stx (cons (combine-projections p1a p2a)
-                (combine-projections p1d p2d))
-          spn2 marks2)]
-    [((cons p1a p1d) (cons p2a p2d))
-     (cons (combine-projections p1a p2a)
-           (combine-projections p1d p2d))]))
 
 ;; ============================================================
 ;; Syntax-Rules Matching
@@ -700,11 +616,10 @@
      (hash-ref core-bindings key (unbound))]
     [(scope parent bindings)
      (hash-ref bindings key (lambda () (scope-resolve-internal parent id)))]
-    [(disjoin mark1 scope1 mark2 scope2)
+    [(disjoin def-mark def-scp use-scp)
      (cond
-       [(top-mark=? id mark1) (scope-resolve-internal scope1 (drop-top-mark id))]
-       [(top-mark=? id mark2) (scope-resolve-internal scope2 (drop-top-mark id))]
-       [else (unbound)])]))
+       [(top-mark=? id def-mark) (scope-resolve-internal def-scp (drop-top-mark id))]
+       [else (scope-resolve-internal use-scp id)])]))
 
 ;; scope-bind! : Scope Identifier Binding -> Void
 ;; Adds a binding to a scope using IdentifierKey.
@@ -721,11 +636,10 @@
        (error 'scope-bind! "name already bound: ~a" id))
      (hash-set! bindings key bnd)
      (record-binding-site! id)]
-    [(disjoin mark1 scope1 mark2 scope2)
-     (cond
-       [(top-mark=? id mark1) (scope-bind! scope1 (drop-top-mark id) bnd)]
-       [(top-mark=? id mark2) (scope-bind! scope2 (drop-top-mark id) bnd)]
-       [else (error 'scope-bind "malformed environment")])]))
+    [(disjoin def-mark def-scp use-scp)
+     (if (top-mark=? id def-mark)
+         (scope-bind! def-scp (drop-top-mark id) bnd)
+         (scope-bind! use-scp id bnd))]))
 
 ;; ============================================================
 ;; Identifier Operations
@@ -733,7 +647,6 @@
 
 ;; mark-syntax : Syntax Mark -> Syntax
 ;; Recursively marks all identifiers in a syntax object, preserving span.
-;; Also handles projections which may be plain conses.
 (define (mark-syntax syn mark)
   (match syn
     [(stx e spn marks)
@@ -743,13 +656,7 @@
                             (mark-syntax (cdr e) mark))]
             [else e])
           spn (cons mark marks))]
-    [(cons a d)
-     ;; Handle plain cons (from projections)
-     (cons (mark-syntax a mark) (mark-syntax d mark))]
-    [(? list? elems)
-     ;; Handle plain list (from projections)
-     (map (lambda (s) (mark-syntax s mark)) elems)]
-    [_ syn]))  ; '_, numbers, '() pass through
+    [_ syn]))
 
 ;; top-mark=? : Identifier Mark -> Boolean
 ;; Returns #t if the identifier's top mark equals the given mark.
@@ -776,10 +683,6 @@
 ;; fresh-def-mark : -> Mark
 ;; Creates a fresh mark for definition-site identifiers.
 (define (fresh-def-mark) (gensym 'd))
-
-;; fresh-use-mark : -> Mark
-;; Creates a fresh mark for use-site identifiers.
-(define (fresh-use-mark) (gensym 'u))
 
 ;; ============================================================
 ;; Gensym
@@ -951,13 +854,12 @@
                   #:when (equal? (identifier-key-marks key) marks))
         (identifier-key-symbol key))
       (scope->names parent marks))]
-    [(disjoin mark1 scope1 mark2 scope2)
+    [(disjoin def-mark def-scp use-scp)
      (cond
-       [(and (pair? marks) (eq? (car marks) mark1))
-        (scope->names scope1 (cdr marks))]
-       [(and (pair? marks) (eq? (car marks) mark2))
-        (scope->names scope2 (cdr marks))]
-       [else (seteq)])]))
+       [(and (pair? marks) (eq? (car marks) def-mark))
+        (scope->names def-scp (cdr marks))]
+       [else
+        (scope->names use-scp marks)])]))
 
 ;; get-names-in-scope : ExpanderResult Stx -> (Set Symbol)
 ;; Returns the names in scope at the given syntax node.
@@ -1183,18 +1085,18 @@
    '(block
      (begin)
      (begin
-       (define x2 1)
+       (define x1 1)
        (begin))
      (begin
-       (define x5 2)
-       (#%expression x2))))
+       (define x3 2)
+       (#%expression x1))))
 
   ;; make sure dotted patterns work
   (check-match
    (expand
     '(let-syntax ([m (syntax-rules () [(m . a) (let ([a 2]) a)])])
         (m . a)))
-   '(let ([a2 2]) a2))
+   '(let ([a1 2]) a1))
   
   ;; dotted (a . (b)) = (a b)
   (displayln "skipping dot paren test")
