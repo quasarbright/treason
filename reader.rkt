@@ -307,7 +307,6 @@
               [(cons a (? pair? d)) (cons (sexpr->syntax a) (loop d))]
               [(cons a d) (cons (sexpr->syntax a) (sexpr->syntax d))]))
           #f '())]
-    ['_ '_]
     [(? symbol? s) (stx s #f '())]
     [(? number? n) (stx n #f '())]
     [_ s]))

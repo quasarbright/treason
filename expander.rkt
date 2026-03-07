@@ -230,7 +230,7 @@
 ;; Expands an expression in the given scope, producing an expanded s-expression.
 (define (expand-expr expr scp)
   (match expr
-    [(stx (? number? n) _ _) n]
+    [(app stx-e (? number? n)) n]
     [(? identifier? id)
      (define binding (scope-resolve scp id))
      (cond
@@ -238,18 +238,18 @@
        [(keyword-binding? binding) (identifier-symbol id)]
        [(stx-error? binding) binding]
        [else (stx-error 'expand-expr "unexpected binding type" expr #f)])]
-    [(stx (list* head-stx _) _ _)
+    [(app stx-e (cons head-stx _))
      #:when (identifier? head-stx)
      (define binding (scope-resolve scp head-stx))
      (cond
        ;; block
        [(and (keyword-binding? binding)
              (eq? 'block (keyword-binding-name binding)))
-        (define def* (cdr (stx-list expr)))
+        (match-define (stx-quote (,_ ,defs ...)) expr)
         (define scp^ (new-scope scp))
-        (define def*^ (expand-def*-pass1 def* scp^))
-        (define def*^^ (expand-def*-pass2 def*^ scp^))
-        `(block . ,def*^^)]
+        (define defs^ (expand-defs-pass1 defs scp^))
+        (define defs^^ (expand-defs-pass2 defs^ scp^))
+        `(block . ,defs^^)]
        ;; let
        [(and (keyword-binding? binding)
              (eq? 'let (keyword-binding-name binding)))
@@ -287,19 +287,19 @@
           (expand-expr marked-stx disjoined-scp))]
        ;; unbound in head position - pass through the stx-error from scope-resolve
        [(stx-error? binding)
-        (for ([arg (cdr (stx-list expr))])
+        (for ([arg (stx-cdr expr)])
           (when (identifier? arg)
             (scope-resolve scp arg)))
         binding]
        ;; variable in head position - not callable
        [(var-binding? binding)
-        (for ([arg (cdr (stx-list expr))])
+        (for ([arg (stx-cdr expr)])
           (when (identifier? arg)
             (scope-resolve scp arg)))
         (stx-error (identifier-symbol head-stx) "not a procedure or syntax" expr head-stx)]
        [else (stx-error #f "unexpected form" expr head-stx)])]
     ;; Non-identifier in head position
-    [(stx (list* head-stx _) _ _)
+    [(app stx-e (cons head-stx _))
      (stx-error #f "not a procedure or syntax" expr head-stx)]))
 
 ;; ============================================================
@@ -311,23 +311,23 @@
 ;; Pass 2: Expand all expressions now that all bindings are known.
 ;; This allows forward references within a definition context.
 
-;; expand-def*-pass1 : [Listof Stx] Scope -> [Listof Pass1Def]
+;; expand-defs-pass1 : [Listof Stx] Scope -> [Listof Pass1Def]
 ;; First pass over a list of definitions.
-(define (expand-def*-pass1 def* scp)
-  (for/list ([def def*])
+(define (expand-defs-pass1 defs scp)
+  (for/list ([def defs])
     (expand-def-pass1 def scp)))
 
-;; expand-def*-pass2 : [Listof Pass1Def] Scope -> [Listof XDef]
+;; expand-defs-pass2 : [Listof Pass1Def] Scope -> [Listof XDef]
 ;; Second pass over a list of definitions.
-(define (expand-def*-pass2 def* scp)
-  (for/list ([def def*])
+(define (expand-defs-pass2 defs scp)
+  (for/list ([def defs])
     (expand-def-pass2 def scp)))
 
 ;; expand-def-pass1 : Stx Scope -> Pass1Def
 ;; First pass of definition expansion: discovers bindings and expands macros.
 (define (expand-def-pass1 def scp)
   (match def
-    [(stx (list* head-stx _) _ _)
+    [(app stx-e (cons head-stx _))
      #:when (identifier? head-stx)
      (define binding (scope-resolve scp head-stx))
      (cond
@@ -360,9 +360,9 @@
        ;; begin
        [(and (keyword-binding? binding)
              (eq? 'begin (keyword-binding-name binding)))
-        (define def* (cdr (stx-list def)))
-        (define def*^ (expand-def*-pass1 def* scp))
-        `(begin . ,def*^)]
+        (define defs (stx-cdr def))
+        (define defs^ (expand-defs-pass1 defs scp))
+        `(begin . ,defs^)]
        ;; #%expression
        [(and (keyword-binding? binding)
              (eq? '#%expression (keyword-binding-name binding)))
@@ -383,7 +383,7 @@
         (stx-error head-stx "not a procedure or syntax" def head-stx)]
        [else (stx-error #f "unexpected form" def head-stx)])]
     ;; bare non-list (e.g. a bare identifier) - not a valid definition form
-    [_ (stx-error #f "not a definition form" def def)]))
+    [_ (stx-error #f "not a definition form" def #f)]))
 
 ;; expand-def-pass2 : Pass1Def Scope -> XDef
 ;; Second pass of definition expansion: expands all expressions.
@@ -394,9 +394,9 @@
     [(? stx-error?) def]  ; pass through errors from pass 1
     [`(define ,var ,expr)
      `(define ,var ,(expand-expr expr scp))]
-    [`(begin ,def* ...)
-     (define def*^ (expand-def*-pass2 def* scp))
-     `(begin . ,def*^)]
+    [`(begin ,defs ...)
+     (define defs^ (expand-defs-pass2 defs scp))
+     `(begin . ,defs^)]
     [`(#%expression ,expr)
      `(#%expression ,(expand-expr expr scp))]
     [(with-disjoin syn scp)
@@ -414,7 +414,7 @@
   (define binding (scope-resolve use-scp mname))
   (match-define (macro-binding _ macrot def-scp) binding)
   (define-values (penv tmpl)
-    (select-syntax-rule who macrot expr def-scp use-scp))
+    (select-syntax-rule who macrot expr))
   (define def-mark (fresh-def-mark))
   (define expanded-tmpl (expand-template tmpl penv def-mark))
   (define introduced-defn-scp (new-scope def-scp))
@@ -429,7 +429,7 @@
     [(? identifier? id)
      (if (hash-has-key? penv (identifier->key id))
          (hash-ref penv (identifier->key id))   ; use-site syntax, keep as-is
-         (mark-syntax tmpl def-mark))]           ; macro-introduced, mark it
+         (mark-id id def-mark))]           ; macro-introduced, mark it
     [(stx (? list? elems) spn marks)
      (stx (map (lambda (t) (expand-template t penv def-mark)) elems) spn marks)]
     [(stx (cons a d) spn marks)
@@ -448,13 +448,12 @@
 ;; find-references, and autocomplete work on pattern variables even if the macro
 ;; is never applied.
 (define (record-all-pvar-resolutions-for-macrot! macrot def-scp)
-  (match (stx-list macrot)
-      [(list _ literals-stx clauses ...)
-       (define literal-ids (stx-list literals-stx))
+  (match macrot
+      [(stx-quote (,_syntax-rules (,literal-ids ...) ,clauses ...))
        (define is-literal? (make-is-datum-literal? literal-ids))
        (for ([clause clauses])
-         (match (stx-list clause)
-           [(list pat tmpl)
+         (match clause
+           [(stx-quote [,pat ,tmpl])
             (define pvar-scp (build-pvar-scope pat is-literal? def-scp))
             (record-pvar-resolutions! tmpl pvar-scp)]))]))
 
@@ -471,9 +470,9 @@
       [(? identifier? id)
        (unless (or (is-literal? id) (eq? (identifier-symbol id) '_))
          (scope-bind! pvar-scp id (pattern-variable-binding id)))]
-      [(stx (? list? elems) _ _)
+      [(app stx-e (? list? elems))
        (for ([elem elems]) (loop elem))]
-      [(stx (cons a d) _ _)
+      [(app stx-e (cons a d))
        (loop a)
        (loop d)]
       [_ (void)]))
@@ -490,10 +489,10 @@
      (define bnd (scope-resolve-internal pvar-scp id))
      (when (pattern-variable-binding? bnd)
        (record-resolution! id bnd pvar-scp))]
-    [(stx (? list? elems) _ _)
+    [(app stx-e (? list? elems))
      (for ([elem elems])
        (record-pvar-resolutions! elem pvar-scp))]
-    [(stx (cons a d) _ _)
+    [(app stx-e (cons a d))
      (record-pvar-resolutions! a pvar-scp)
      (record-pvar-resolutions! d pvar-scp)]
     [_ (void)]))
@@ -505,11 +504,10 @@
 ;; select-syntax-rule : Symbol Syntax Syntax Scope Scope -> (values PatternEnv Syntax)
 ;; Selects the first matching clause from a syntax-rules transformer.
 ;; Returns the pattern environment and the template to instantiate.
-(define (select-syntax-rule who macrot expr def-scp use-scp)
+(define (select-syntax-rule who macrot expr)
   ;; macrot is (syntax-rules (literal ...) clause ...)
-  (match (stx-list macrot)
-    [(list _ literals-stx clauses ...)
-     (define literal-ids (stx-list literals-stx))
+  (match macrot
+    [(stx-quote (,_syntax-rules (,literal-ids ...) ,clauses ...))
      (define is-datum-literal? (make-is-datum-literal? literal-ids))
      (try-clauses who clauses expr is-datum-literal?)]))
 
@@ -519,8 +517,8 @@
 (define (try-clauses who clauses expr is-datum-literal?)
   (match clauses
     [(cons clause rest)
-     (match (stx-list clause)
-       [(list pat tmpl)
+     (match clause
+       [(stx-quote [,pat ,tmpl])
         (define maybe-penv (match-top-pattern pat expr is-datum-literal?))
         (if maybe-penv
             (values maybe-penv tmpl)
@@ -533,9 +531,9 @@
 ;; Returns a PatternEnv on success, #f on failure.
 (define (match-top-pattern pat expr is-datum-literal?)
   (match* (pat expr)
-    [((stx (list _ pd ...) _ _) (stx (list _ ed ...) _ _))
+    [((app stx-e (list _ pd ...)) (app stx-e (list _ ed ...)))
      (match-pattern-list pd ed is-datum-literal?)]
-    [((stx (cons _ pd) _ _) (stx (cons _ ed) _ _))
+    [((app stx-e (cons _ pd)) (app stx-e (cons _ ed)))
      (match-pattern pd ed is-datum-literal?)]
     [(_ _) #f]))
 
@@ -566,14 +564,14 @@
      #:when (not (is-datum-literal? pvar))
      (hash (identifier->key pvar) syn)]
     ;; datum literal: must be equal
-    [((stx (? number? v1) _ _) (stx (? number? v2) _ _))
+    [((app stx-e (? number? v1)) (app stx-e (? number? v2)))
      #:when (= v1 v2)
      (hash)]
     ;; list: match element-wise
-    [((stx (? list? pelems) _ _) (stx (? list? eelems) _ _))
-     (match-pattern-list pelems eelems is-datum-literal?)]
+    [((app stx-e (? list? p-elems)) (app stx-e (? list? e-elems)))
+     (match-pattern-list p-elems e-elems is-datum-literal?)]
     ;; cons (dotted pair): match both parts and combine environments
-    [((stx (cons pa pd) _ _) (stx (cons ea ed) _ _))
+    [((app stx-e (cons pa pd)) (app stx-e (cons ea ed)))
      (let ([resa (match-pattern pa ea is-datum-literal?)])
        (and resa
             (let ([resd (match-pattern pd ed is-datum-literal?)])
@@ -678,24 +676,18 @@
 ;; Identifier Operations
 ;; ============================================================
 
-;; mark-syntax : Syntax Mark -> Syntax
-;; Recursively marks all identifiers in a syntax object, preserving span.
-(define (mark-syntax syn mark)
-  (match syn
-    [(stx e spn marks)
-     (stx (cond
-            [(list? e) (map (lambda (s) (mark-syntax s mark)) e)]
-            [(pair? e) (cons (mark-syntax (car e) mark)
-                            (mark-syntax (cdr e) mark))]
-            [else e])
-          spn (cons mark marks))]
-    [_ syn]))
+;; mark-syntax : Identifier Mark -> Identifier
+;; Mark an identifier
+(define (mark-id id mark)
+  (match id
+    [(stx x spn marks)
+     (stx x spn (cons mark marks))]))
 
 ;; top-mark=? : Identifier Mark -> Boolean
 ;; Returns #t if the identifier's top mark equals the given mark.
 (define (top-mark=? id mark)
   (match id
-    [(stx _ _ (cons (== mark) _)) #t]
+    [(app stx-marks (cons (== mark) _)) #t]
     [_ #f]))
 
 ;; drop-top-mark : Identifier -> Identifier
@@ -811,7 +803,7 @@
   (let loop ([syn expanded] [acc '()])
     (match syn
       [(? stx-error? err) (cons err acc)]
-      [(stx e _ _)
+      [(? stx? (app stx-e e))
        (cond
          [(list? e) (foldl (lambda (s a) (loop s a)) acc e)]
          [(pair? e) (loop (cdr e) (loop (car e) acc))]

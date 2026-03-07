@@ -36,6 +36,9 @@
           ;; Convert list pattern to list pattern wrapped in stx
           (let ([datum-pats (map loop (attribute datum))])
             #`(stx (list #,@datum-pats) _ _))]
+         [(a . d)
+          #`(stx (cons #,(loop (attribute a)) #,(loop (attribute d))) _ _)]
+         [(~datum ...) datum]
          [atom #'(? (stx-eq-to-datum? 'atom))]))])
   (syntax-parser
     ;; TODO unquote
