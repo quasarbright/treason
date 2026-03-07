@@ -126,7 +126,8 @@
   (test-case
    "property: atom spans correspond to source substrings"
    (check-property
-    (property ([src gen:sexp-string])
+    (property #:name "atom spans correspond to source substrings"
+              ([src gen:sexp-string])
       (define parsed (string->stx 'test src))
       (for ([atom (in-list (collect-atoms parsed))])
         (define sp (stx-span atom))
@@ -141,7 +142,8 @@
   (test-case
    "property: list spans are delimited by parens"
    (check-property
-    (property ([src gen:sexp-string])
+    (property #:name "list spans are delimited by parens"
+              ([src gen:sexp-string])
       (define parsed (string->stx 'test src))
       (for ([lst (in-list (collect-lists parsed))])
         (define sp (stx-span lst))
@@ -156,7 +158,8 @@
   (test-case
    "property: atom spans are non-empty"
    (check-property
-    (property ([src gen:sexp-string])
+    (property #:name "atom spans are non-empty"
+              ([src gen:sexp-string])
       (define parsed (string->stx 'test src))
       (for ([atom (in-list (collect-atoms parsed))])
         (define sp (stx-span atom))

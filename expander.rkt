@@ -117,15 +117,24 @@
   (with-handlers ([stx-error? (lambda (err) err)])
     body ...))
 
+(define (raise-and-record-stx-error err)
+  (record-stx-error! err)
+  (raise err))
+
+(define (record-stx-error! err)
+  (define errs (expander-state-stx-errors (current-expander-state)))
+  (set-add! errs err))
+
 ;; ------------------------------------------------------------
 ;; LSP State
 ;; ------------------------------------------------------------
 
 ;; An ExpanderState is a (expander-state Hash Hash Hash)
-(struct expander-state [span->stx resolutions references] #:transparent)
+(struct expander-state [span->stx resolutions references stx-errors] #:transparent)
 ;; span->stx : [MutableHashOf Span Stx] - maps surface span to its Stx object
 ;; resolutions : [MutableHashOf Span [Listof Resolution]] - maps ref span to resolutions
 ;; references : [MutableHashOf Span [Listof Span]] - maps def span to ref spans
+;; stx-errors : [MutableSetOf stx-error?]
 
 ;; A Resolution is a (resolution Binding-or-#f Stx Scope)
 (struct resolution [binding ref-stx scp] #:transparent)
@@ -212,7 +221,7 @@
                  [gensym-ctr 0])
     (record-all-stx! surface-stx)
     (define expanded (expand-expr surface-stx initial-scope))
-    (define errors (find-stx-errors expanded))
+    (define errors (for/list ([err (expander-state-stx-errors state)]) err))
     (expander-result surface-stx expanded errors state)))
 
 ;; expand : SExpression -> SExpression
@@ -257,7 +266,7 @@
           (match expr
             [(stx-quote (let ([,x-stx ,e-stx]) ,body))
              (unless (identifier? x-stx)
-               (raise (stx-error 'let "bad syntax" expr x-stx)))
+               (raise-and-record-stx-error (stx-error 'let "bad syntax" expr x-stx)))
              (define e^ (expand-expr e-stx scp))
              (define scp^ (new-scope scp))
              (define x-name (gensym (identifier-symbol x-stx)))
@@ -265,7 +274,7 @@
              (scope-bind! scp^ x-stx x-binding)
              (define b^ (expand-expr body scp^))
              `(let ([,x-name ,e^]) ,b^)]
-            [_ (raise (stx-error 'let "bad syntax" expr #f))]))]
+            [_ (raise-and-record-stx-error (stx-error 'let "bad syntax" expr #f))]))]
        ;; let-syntax
        [(and (keyword-binding? binding)
              (eq? 'let-syntax (keyword-binding-name binding)))
@@ -273,13 +282,13 @@
           (match expr
             [(stx-quote (let-syntax ([,mname-stx ,macrot-stx]) ,body))
              (unless (identifier? mname-stx)
-               (raise (stx-error 'let-syntax "bad syntax" expr mname-stx)))
+               (raise-and-record-stx-error (stx-error 'let-syntax "bad syntax" expr mname-stx)))
              (define scp^ (new-scope scp))
              (define m-binding (macro-binding mname-stx macrot-stx scp))
              (scope-bind! scp^ mname-stx m-binding)
              (record-all-pvar-resolutions-for-macrot! macrot-stx scp)
              (expand-expr body scp^)]
-            [_ (raise (stx-error 'let-syntax "bad syntax" expr #f))]))]
+            [_ (raise-and-record-stx-error (stx-error 'let-syntax "bad syntax" expr #f))]))]
        ;; macro application
        [(macro-binding? binding)
         (with-stx-error-handling
@@ -338,12 +347,12 @@
           (match def
             [(stx-quote (define ,var-stx ,expr-stx))
              (unless (identifier? var-stx)
-               (raise (stx-error 'define "bad syntax" def var-stx)))
+               (raise-and-record-stx-error (stx-error 'define "bad syntax" def var-stx)))
              (define var-name (gensym (identifier-symbol var-stx)))
              (define var-bnd (var-binding var-stx var-name))
              (scope-bind! scp var-stx var-bnd)
              `(define ,var-name ,expr-stx)]
-            [_ (raise (stx-error 'define "bad syntax" def #f))]))]
+            [_ (raise-and-record-stx-error (stx-error 'define "bad syntax" def #f))]))]
        ;; define-syntax
        [(and (keyword-binding? binding)
              (eq? 'define-syntax (keyword-binding-name binding)))
@@ -351,12 +360,12 @@
           (match def
             [(stx-quote (define-syntax ,var-stx ,macrot-stx))
              (unless (identifier? var-stx)
-               (raise (stx-error 'define-syntax "bad syntax" def var-stx)))
+               (raise-and-record-stx-error (stx-error 'define-syntax "bad syntax" def var-stx)))
              (define m-binding (macro-binding var-stx macrot-stx scp))
              (scope-bind! scp var-stx m-binding)
              (record-all-pvar-resolutions-for-macrot! macrot-stx scp)
              `(begin)]
-            [_ (raise (stx-error 'define-syntax "bad syntax" def #f))]))]
+            [_ (raise-and-record-stx-error (stx-error 'define-syntax "bad syntax" def #f))]))]
        ;; begin
        [(and (keyword-binding? binding)
              (eq? 'begin (keyword-binding-name binding)))
@@ -370,7 +379,7 @@
           (match def
             [(stx-quote (#%expression ,expr-stx))
              `(#%expression ,expr-stx)]
-            [_ (raise (stx-error '#%expression "bad syntax" def #f))]))]
+            [_ (raise-and-record-stx-error (stx-error '#%expression "bad syntax" def #f))]))]
        ;; macro application
        [(macro-binding? binding)
         (with-stx-error-handling
@@ -518,7 +527,7 @@
         (if maybe-penv
             (values maybe-penv tmpl)
             (try-clauses who rest expr is-datum-literal?))])]
-    ['() (raise (stx-error who "no pattern matched" expr #f))]))
+    ['() (raise-and-record-stx-error (stx-error who "no pattern matched" expr #f))]))
 
 ;; match-top-pattern : Pattern Syntax (Id -> Bool) -> (or PatternEnv #f)
 ;; Matches a top-level pattern against syntax.
@@ -577,27 +586,6 @@
   (lambda (id)
     (memf (lambda (x) (eq? (identifier-symbol x) (identifier-symbol id))) literal-ids)))
 
-;; make-is-literal? : [Listof Identifier] -> (Identifier -> Boolean)
-;; Creates a predicate that checks if an identifier is a literal
-;; (using bound-identifier=? comparison).
-(define (make-is-literal? literal-ids)
-  (lambda (id)
-    (memf (lambda (x) (bound-identifier=? id x)) literal-ids)))
-
-;; make-literal-match? : Scope Scope -> (Identifier Identifier -> Boolean)
-;; Creates a predicate for matching literals in syntax-rules.
-;; A literal in the pattern matches an identifier in the input if:
-;; - Both are bound and resolve to the same binding, OR
-;; - Both are unbound and have the same symbol name.
-(define (make-literal-match? def-scp use-scp)
-  (lambda (literal-id target-id)
-    (define literal-binding (scope-resolve-internal def-scp literal-id))
-    (define target-binding (scope-resolve-internal use-scp target-id))
-    (or (and (not (stx-error? literal-binding)) (not (stx-error? target-binding))
-             (eq? literal-binding target-binding))
-        (and (stx-error? literal-binding) (stx-error? target-binding)
-             (eq? (identifier-symbol literal-id) (identifier-symbol target-id))))))
-
 ;; ============================================================
 ;; Scope Operations
 ;; ============================================================
@@ -615,6 +603,8 @@
   (define binding (scope-resolve-internal scp id))
   ;; Record the resolution for LSP
   (record-resolution! id (if (stx-error? binding) #f binding) scp)
+  (when (stx-error? binding)
+    (record-stx-error! binding))
   binding)
 
 ;; scope-resolve-internal : Scope Identifier -> (or Binding stx-error)
@@ -735,7 +725,7 @@
 ;; make-expander-state : -> ExpanderState
 ;; Creates a fresh expander state with empty tables.
 (define (make-expander-state)
-  (expander-state (make-hash) (make-hash) (make-hash)))
+  (expander-state (make-hash) (make-hash) (make-hash) (mutable-set)))
 
 ;; hash-cons! : MutableHash Key Value -> Void
 ;; Appends a value to the list stored at key (multi-valued hash).
@@ -801,20 +791,6 @@
          [(list? e) (for-each loop e)]
          [(pair? e) (loop (car e)) (loop (cdr e))])]
       [_ (void)])))
-
-;; find-stx-errors : XSExpr -> (Listof StxError)
-;; Collects all stx-error values from the expanded s-expression tree.
-(define (find-stx-errors expanded)
-  (let loop ([syn expanded] [acc '()])
-    (match syn
-      [(? stx-error? err) (cons err acc)]
-      [(? stx? (app stx-e e))
-       (cond
-         [(list? e) (foldl (lambda (s a) (loop s a)) acc e)]
-         [(pair? e) (loop (cdr e) (loop (car e) acc))]
-         [else acc])]
-      [(cons a d) (loop d (loop a acc))]
-      [_ acc])))
 
 ;; ============================================================
 ;; Query Functions
