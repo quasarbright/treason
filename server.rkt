@@ -103,6 +103,8 @@ do we want actual types instead of json?
     (define text-documents (make-hash))
     ;; maps uris to expander-results (or parse-error-result on parse error)
     (define results (make-hash))
+    (define semantic-token-types '("keyword" "variable" "number" "macro"))
+    (define semantic-token-modifiers '("definition" "defaultLibrary"))
 
     (init-field client)
 
@@ -114,7 +116,10 @@ do we want actual types instead of json?
                       'documentSymbolProvider #t
                       'definitionProvider #t
                       'referencesProvider #t
-                      'completionProvider (hasheq 'triggerCharacters (list "(" "[")))))
+                      'completionProvider (hasheq 'triggerCharacters (list "(" "["))
+                      'semanticTokensProvider (hasheq 'legend (hasheq 'tokenTypes semantic-token-types
+                                                                       'tokenModifiers semantic-token-modifiers)
+                                                       'full #t))))
 
     ;; get-result : Symbol -> ExpanderResult
     ;; Retrieves the expander result for the given URI.
@@ -209,7 +214,15 @@ do we want actual types instead of json?
                      'version version))
          (hash-set! text-documents uri new-text-document)
          (analyze-and-store! uri new-text)]))
-    
+
+    (define/public (textDocument/semanticTokens/full parameters)
+      (match parameters
+        [(hash* ['textDocument (hash* ['uri uri])])
+         (define result (get-result uri 'textDocument/semanticTokens/full))
+         (if (parse-error-result? result)
+             (hasheq 'data '())
+             (hasheq 'data (semantic-tokens result)))]))
+
     (define/public (textDocument/didClose parameters)
       (match parameters
         [(hash* ['textDocument (hash* ['uri uri])])
@@ -305,6 +318,78 @@ do we want actual types instead of json?
                 (list (stx 'x (span (loc "test.tsn" 0 23) (loc "test.tsn" 0 24)))
                       (stx 'x (span (loc "test.tsn" 0 23) (loc "test.tsn" 0 24))))))
 
+
+;; classify-binding : (or/c Binding #f) -> (or/c 'keyword 'variable 'macro #f)
+(define (classify-binding bnd)
+  (match bnd
+    [#f #f]
+    [(keyword-binding _) 'keyword]
+    [(var-binding _ _) 'variable]
+    [(macro-binding _ _ _) 'macro]
+    [(pattern-variable-binding _) 'macro]))
+
+;; token-type-index : Symbol -> Natural
+(define (token-type-index type)
+  (match type ['keyword 0] ['variable 1] ['number 2] ['macro 3]))
+
+;; compute-token-modifiers : ExpanderState Span (or/c Binding #f) -> Natural
+(define (compute-token-modifiers state spn bnd)
+  (define is-definition? (hash-has-key? (expander-state-bindings state) spn))
+  (define is-default-library? (and bnd (keyword-binding? bnd)))
+  (+ (if is-definition? 1 0)
+     (if is-default-library? 2 0)))
+
+;; semantic-tokens : ExpanderResult -> (Listof Integer)
+;; Returns LSP-encoded semantic token data (flat delta-encoded array, 5 integers per token).
+(define (semantic-tokens result)
+  (define state (expander-result-state result))
+  (define span->stx-table (expander-state-span->stx state))
+  (define resolutions-table (expander-state-resolutions state))
+  (define bindings-table (expander-state-bindings state))
+
+  (define token-map (make-hash))
+
+  ;; For each surface node: numbers get 'number, identifiers get their binding type.
+  ;; Binding sites are found via the bindings table; reference sites via resolutions.
+  (for ([(spn stx-node) (in-hash span->stx-table)])
+    (cond
+      [(number? (stx-e stx-node))
+       (hash-set! token-map spn (list 'number 0))]
+      [(identifier? stx-node)
+       (define bnd
+         (or (hash-ref bindings-table spn #f)
+             (for/first ([res (in-list (hash-ref resolutions-table spn '()))]
+                         #:when (resolution-binding res))
+               (resolution-binding res))))
+       (define tok-type (classify-binding bnd))
+       (when tok-type
+         (hash-set! token-map spn
+                    (list tok-type (compute-token-modifiers state spn bnd))))]))
+
+  ;; Sort by (line, col)
+  (define sorted-tokens
+    (sort (hash->list token-map)
+          (lambda (a b)
+            (define sa (span-start (car a)))
+            (define sb (span-start (car b)))
+            (or (< (loc-line sa) (loc-line sb))
+                (and (= (loc-line sa) (loc-line sb))
+                     (< (loc-column sa) (loc-column sb)))))))
+
+  ;; Delta-encode into flat list
+  (apply append
+    (let loop ([tokens sorted-tokens] [prev-line 0] [prev-char 0])
+      (match tokens
+        ['() '()]
+        [(cons (cons spn (list tok-type mods)) rest)
+         (define start (span-start spn))
+         (define line (loc-line start))
+         (define char (loc-column start))
+         (define len (- (loc-column (span-end spn)) char))
+         (define delta-line (- line prev-line))
+         (define delta-char (if (zero? delta-line) (- char prev-char) char))
+         (cons (list delta-line delta-char len (token-type-index tok-type) mods)
+               (loop rest line char))]))))
 
 (define (span->location spn)
   (hash 'uri (loc-source (span-start spn))

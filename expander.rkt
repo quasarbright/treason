@@ -132,11 +132,12 @@
 ;; LSP State
 ;; ------------------------------------------------------------
 
-;; An ExpanderState is a (expander-state Hash Hash Hash)
-(struct expander-state [span->stx resolutions references stx-errors] #:transparent)
+;; An ExpanderState is a (expander-state Hash Hash Hash Hash MutableSet)
+(struct expander-state [span->stx resolutions references bindings stx-errors] #:transparent)
 ;; span->stx : [MutableHashOf Span Stx] - maps surface span to its Stx object
 ;; resolutions : [MutableHashOf Span [Listof Resolution]] - maps ref span to resolutions
 ;; references : [MutableHashOf Span [Listof Span]] - maps def span to ref spans
+;; bindings : [MutableHashOf Span Binding] - maps binding site span to its Binding
 ;; stx-errors : [MutableSetOf stx-error?]
 
 ;; A Resolution is a (resolution Binding-or-#f Stx Scope)
@@ -639,7 +640,7 @@
      (when (hash-has-key? bindings key)
        (error 'scope-bind! "name already bound: ~a" id))
      (hash-set! bindings key bnd)
-     (record-binding-site! id)]
+     (record-binding-site! id bnd)]
     [(disjoin def-mark def-scp use-scp)
      (if (top-mark=? id def-mark)
          (scope-bind! def-scp (drop-top-mark id) bnd)
@@ -728,7 +729,7 @@
 ;; make-expander-state : -> ExpanderState
 ;; Creates a fresh expander state with empty tables.
 (define (make-expander-state)
-  (expander-state (make-hash) (make-hash) (make-hash) (mutable-set)))
+  (expander-state (make-hash) (make-hash) (make-hash) (make-hash) (mutable-set)))
 
 ;; hash-cons! : MutableHash Key Value -> Void
 ;; Appends a value to the list stored at key (multi-valued hash).
@@ -771,14 +772,14 @@
     [(pattern-variable-binding site) site]
     [(keyword-binding _) #f]))
 
-;; record-binding-site! : Identifier -> Void
-;; Ensures the binding site's span is registered in the references table.
-;; This allows goto-definition to recognize the identifier as a binder
-;; even when it has no references.
-(define (record-binding-site! id)
+;; record-binding-site! : Identifier Binding -> Void
+;; Records the binding site in the bindings table (for semantic tokens and LSP).
+;; Also ensures the binding site's span is registered in the references table.
+(define (record-binding-site! id bnd)
   (define spn (stx-span id))
   (define state (current-expander-state))
   (when (and spn state)
+    (hash-set! (expander-state-bindings state) spn bnd)
     (define references (expander-state-references state))
     (unless (hash-has-key? references spn)
       (hash-set! references spn '()))))
@@ -828,12 +829,12 @@
   (define references (expander-state-references state))
   (define span->stx (expander-state-span->stx state))
   (if spn
-      ;; First check if this is a binding site (has entries in references table)
-      (let ([direct-refs (hash-ref references spn '())])
-        (if (not (null? direct-refs))
+      ;; First check if this is a binding site (has entry in bindings table)
+      (let ([is-binding-site? (hash-has-key? (expander-state-bindings state) spn)])
+        (if is-binding-site?
             ;; It's a binding site - return all references to it (deduplicated)
             (remove-duplicates
-             (for/list ([ref-spn direct-refs])
+             (for/list ([ref-spn (hash-ref references spn '())])
                (hash-ref span->stx ref-spn))
              #:key stx-span)
             ;; It's a reference site - find binding sites, then their references
@@ -966,7 +967,7 @@
     [else
      (define resolution-sites (filter-map stx-span (get-binding-sites-of result node)))
      (define spn (stx-span node))
-     (define is-binder? (and spn (hash-has-key? (expander-state-references (expander-result-state result)) spn)))
+     (define is-binder? (and spn (hash-has-key? (expander-state-bindings (expander-result-state result)) spn)))
      (define self-span (and is-binder? spn))
      (if self-span
          (remove-duplicates (cons self-span resolution-sites) equal?)

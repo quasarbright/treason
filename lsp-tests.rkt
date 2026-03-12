@@ -1381,6 +1381,54 @@
   (sort results string<? #:key (lambda (h) (hash-ref h 'label))))
 
 ;; ============================================================
+;; Semantic Token Helpers
+;; ============================================================
+
+;; A Token is a (token Any Symbol [Listof Symbol])
+(struct token [name type modifiers] #:transparent)
+;; name : the token text as a symbol (or number for numeric literals)
+;; type : one of 'keyword 'variable 'number 'macro
+;; modifiers : subset of '(definition defaultLibrary)
+
+(define semantic-token-type-names    (vector 'keyword 'variable 'number 'macro))
+(define semantic-token-modifier-names (vector 'definition 'defaultLibrary))
+
+;; decode-semantic-tokens : String (Listof Integer) -> (Listof Token)
+;; Decodes LSP delta-encoded token data into human-readable Token structs.
+(define (decode-semantic-tokens source data)
+  (define source-lines (string-split source "\n" #:trim? #f))
+  (define (get-text line char len)
+    (substring (list-ref source-lines line) char (+ char len)))
+  (define (decode-modifiers bitmask)
+    (for/list ([i (in-range (vector-length semantic-token-modifier-names))]
+               #:when (bitwise-bit-set? bitmask i))
+      (vector-ref semantic-token-modifier-names i)))
+  (let loop ([data data] [line 0] [char 0] [acc '()])
+    (match data
+      ['() (reverse acc)]
+      [(list* dl dc len type-idx mods-bitmask rest)
+       (define new-line (+ line dl))
+       (define new-char (if (zero? dl) (+ char dc) dc))
+       (define text (get-text new-line new-char len))
+       (define tok-name (or (string->number text) (string->symbol text)))
+       (loop rest new-line new-char
+             (cons (token tok-name
+                          (vector-ref semantic-token-type-names type-idx)
+                          (decode-modifiers mods-bitmask))
+                   acc))])))
+
+;; semantic-tokens : String -> (Listof Token)
+;; Creates a server, opens source, returns decoded semantic tokens.
+(define (semantic-tokens source)
+  (define server (make-test-server source))
+  (define data
+    (hash-ref
+     (send server textDocument/semanticTokens/full
+           (hasheq 'textDocument (hasheq 'uri test-uri)))
+     'data))
+  (decode-semantic-tokens source data))
+
+;; ============================================================
 ;; Sample Program Pool
 ;; ============================================================
 
@@ -1709,8 +1757,42 @@
             unbound-error?
             (format "Autocomplete soundness failed for ~a in ~a: autocomplete(~a) suggested ~s but it's unbound in modified source"
                     sym name pos completion-name)))))))
-)
 
+  ;; ============================================================
+  ;; Semantic Token Tests
+  ;; ============================================================
+
+  (test-case "semantic tokens: basic let"
+    (check-equal?
+     (semantic-tokens "(let ([x 2]) x)")
+     (list (token 'let 'keyword '(defaultLibrary))
+           (token 'x 'variable '(definition))
+           (token 2 'number '())
+           (token 'x 'variable '()))))
+
+  (test-case "semantic tokens: define in block"
+    (check-equal?
+     (semantic-tokens "(block (define x 1) (#%expression x))")
+     (list (token 'block        'keyword  '(defaultLibrary))
+           (token 'define       'keyword  '(defaultLibrary))
+           (token 'x            'variable '(definition))
+           (token 1             'number   '())
+           (token '#%expression 'keyword  '(defaultLibrary))
+           (token 'x            'variable '()))))
+
+  (test-case "semantic tokens: user-defined macro"
+    (check-equal?
+     (semantic-tokens "(let-syntax ([m (syntax-rules () [(_ q) q])]) (m 5))")
+     (list (token 'let-syntax 'keyword '(defaultLibrary))
+           (token 'm          'macro   '(definition))
+           (token 'q          'macro   '(definition))
+           (token 'q          'macro   '())
+           (token 'm          'macro   '())
+           (token 5           'number  '()))))
+
+  (test-case "semantic tokens: parse error returns empty"
+    (check-equal? (semantic-tokens "(let") '()))
+)
 
 ;; Helper: Replace identifier at position with a new name
 ;; Returns the modified source string
