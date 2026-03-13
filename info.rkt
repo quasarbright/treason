@@ -1,7 +1,7 @@
 #lang info
 (define collection "treason")
-(define deps '("base"))
-(define build-deps '("scribble-lib" "racket-doc" "rackunit-lib" "rackcheck" "errortrace-lib"))
+(define deps '("base" "rackunit-lib" "rackcheck" "errortrace-lib"))
+(define build-deps '("scribble-lib" "racket-doc"))
 (define scribblings '(("scribblings/treason.scrbl" ())))
 (define pkg-desc "Description Here")
 (define version "0.0")

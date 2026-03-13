@@ -190,8 +190,8 @@ do we want actual types instead of json?
                          (send client textDocument/publishDiagnostics
                                (hasheq 'uri uri
                                        'diagnostics (list (parse-error->diagnostic err)))))])
-        (define syn (string->stx uri text))
-        (define result (analyze! syn))
+        (define syns (string->stxs uri text))
+        (define result (analyze! syns))
         (hash-set! results uri result)
         (define diagnostics (map stx-error->diagnostic (expander-result-errors result)))
         (send client textDocument/publishDiagnostics

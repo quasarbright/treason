@@ -34,6 +34,16 @@
   (parameterize ([current-pstate (pstate src txt 0 0 0)])
     (parse)))
 
+;; any/c string? -> [Listof Stx]
+;; Parses text as a sequence of s-expressions, returning all top-level forms.
+(define (string->stxs src txt)
+  (parameterize ([current-pstate (pstate src txt 0 0 0)])
+    (let loop ([acc '()])
+      (define s (parse))
+      (if (eof-object? s)
+          (reverse acc)
+          (loop (cons s acc))))))
+
 ;; -> (or/c stx? eof)
 ;; Parses an s-expression from text at the current position.
 ;; Returns stx or eof.

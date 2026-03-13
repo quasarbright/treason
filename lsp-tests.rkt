@@ -1253,6 +1253,67 @@
   (test-case
    "error message: unbound identifier"
    (check-true (has-diagnostic-matching? "(let ([x 1]) y)" #rx"unbound identifier")))
+
+  ;; ============================================================
+  ;; Implicit #%expression in definition context (issue #21)
+  ;; ============================================================
+
+  (test-case
+   "implicit #%expression: bare identifier in block"
+   ;; A bound variable used as a bare expression in a block should work without error.
+   (define source "(block (define x 1) x)")
+   (check-equal?
+    (goto-definition source (find-position source "x" 1))
+    (list (hash 'uri test-uri 'range (find-range source "x" 0)))))
+
+  (test-case
+   "implicit #%expression: bare number at top level"
+   ;; A bare number at top level should not produce an error.
+   (check-false (has-diagnostic-matching? "42" #rx".")))
+
+  (test-case
+   "implicit #%expression: bare expression in block"
+   ;; An expression form in head position of a block def slot should be treated as #%expression.
+   (define source "(block (define x 1) (let ([y x]) y))")
+   (check-equal?
+    (goto-definition source (find-position source "x" 1))
+    (list (hash 'uri test-uri 'range (find-range source "x" 0)))))
+
+  ;; ============================================================
+  ;; Implicit top-level block (issue #21)
+  ;; ============================================================
+
+  (test-case
+   "implicit top-level block: multi-form program"
+   ;; Multiple top-level forms: definition followed by a reference.
+   (define source "(define x 1)\nx")
+   (check-equal?
+    (goto-definition source (find-position source "x" 1))
+    (list (hash 'uri test-uri 'range (find-range source "x" 0)))))
+
+  (test-case
+   "implicit top-level block: forward references"
+   ;; Definitions can refer to later definitions (block-level forward ref).
+   (define source "(define x 1)\n(define y x)\ny")
+   (check-equal?
+    (goto-definition source (find-position source "x" 1))
+    (list (hash 'uri test-uri 'range (find-range source "x" 0))))
+   (check-equal?
+    (goto-definition source (find-position source "y" 1))
+    (list (hash 'uri test-uri 'range (find-range source "y" 0)))))
+
+  (test-case
+   "implicit top-level block: bare expression at top level"
+   ;; A bare top-level expression should not produce a diagnostic.
+   (check-false (has-diagnostic-matching? "(define x 1)\nx" #rx".")))
+
+  (test-case
+   "implicit top-level block: single let expression"
+   ;; A single let form at the top level works as an implicit block with one expression.
+   (define source "(let ([x 2]) x)")
+   (check-equal?
+    (goto-definition source (find-position source "x" 1))
+    (list (hash 'uri test-uri 'range (find-range source "x" 0)))))
   )
 
 ;; ============================================================
@@ -1792,6 +1853,66 @@
 
   (test-case "semantic tokens: parse error returns empty"
     (check-equal? (semantic-tokens "(let") '()))
+
+  ;; ============================================================
+  ;; Multi-form top-level: autocomplete tests
+  ;; ============================================================
+
+  (test-case "multi-top-level autocomplete: reference sees earlier definition"
+    ;; x is defined on line 0, referenced on line 1 — x should be in scope
+    (define source "(define x 1)\nx")
+    (check-equal?
+     (autocomplete source (find-position source "x" 1))
+     (list (hasheq 'label "x"))))
+
+  (test-case "multi-top-level autocomplete: reference sees later definition (forward ref)"
+    ;; In an implicit block, all definitions are visible everywhere (two-pass).
+    ;; x is referenced on line 0 before it is defined on line 1.
+    (define source "(define y x)\n(define x 1)\ny")
+    (check-equal?
+     (autocomplete source (find-position source "x" 0))
+     (list (hasheq 'label "x") (hasheq 'label "y"))))
+
+  (test-case "multi-top-level autocomplete: multiple definitions all in scope"
+    (define source "(define a 1)\n(define b 2)\n(define c 3)\nb")
+    (check-equal?
+     (autocomplete source (find-position source "b" 1))
+     (list (hasheq 'label "a") (hasheq 'label "b") (hasheq 'label "c"))))
+
+  (test-case "multi-top-level autocomplete: bare expression after definitions"
+    ;; At the bare identifier position, both definitions should be in scope
+    (define source "(define x 1)\n(define y 2)\nx")
+    (check-equal?
+     (autocomplete source (find-position source "x" 1))
+     (list (hasheq 'label "x") (hasheq 'label "y"))))
+
+  ;; ============================================================
+  ;; Multi-form top-level: semantic token tests
+  ;; ============================================================
+
+  (test-case "semantic tokens: multi-top-level define and reference"
+    (check-equal?
+     (semantic-tokens "(define x 1)\nx")
+     (list (token 'define 'keyword  '(defaultLibrary))
+           (token 'x      'variable '(definition))
+           (token 1       'number   '())
+           (token 'x      'variable '()))))
+
+  (test-case "semantic tokens: multi-top-level two defines"
+    (check-equal?
+     (semantic-tokens "(define x 1)\n(define y x)")
+     (list (token 'define 'keyword  '(defaultLibrary))
+           (token 'x      'variable '(definition))
+           (token 1       'number   '())
+           (token 'define 'keyword  '(defaultLibrary))
+           (token 'y      'variable '(definition))
+           (token 'x      'variable '()))))
+
+  (test-case "semantic tokens: multi-top-level bare number"
+    ;; A bare number at top level is an implicit #%expression — it gets a 'number token
+    (check-equal?
+     (semantic-tokens "42")
+     (list (token 42 'number '()))))
 )
 
 ;; Helper: Replace identifier at position with a new name

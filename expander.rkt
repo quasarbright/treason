@@ -181,9 +181,9 @@
 ;; - (list '#%expression Stx)           ; unexpanded expression
 ;; - (with-disjoin Pass1Def Scope)      ; from macro expansion
 
-;; An ExpanderResult is a (expander-result Stx XSExpr (Listof StxError) ExpanderState)
+;; An ExpanderResult is a (expander-result [Listof Stx] XSExpr (Listof StxError) ExpanderState)
 (struct expander-result [surface expanded errors state] #:transparent)
-;; surface : Stx - the original surface syntax
+;; surface : [Listof Stx] - the original top-level surface syntax forms
 ;; expanded : XSExpr - the fully expanded s-expression
 ;; errors : (Listof StxError) - syntax errors found during expansion
 ;; state : ExpanderState - the final expander state with populated tables
@@ -217,16 +217,24 @@
 ;; Entry Points
 ;; ============================================================
 
-;; analyze! : Stx -> ExpanderResult
+;; analyze! : [Listof Stx] -> ExpanderResult
 ;; Main entry point. Initializes state, records surface syntax, expands, returns result.
-(define (analyze! surface-stx)
+(define (analyze! surface-stxs)
   (define state (make-expander-state))
   (parameterize ([current-expander-state state]
                  [gensym-ctr 0])
-    (record-all-stx! surface-stx)
-    (define expanded (expand-expr surface-stx initial-scope))
+    (for ([s surface-stxs]) (record-all-stx! s))
+    (define expanded (expand-toplevel surface-stxs initial-scope))
     (define errors (for/list ([err (expander-state-stx-errors state)]) err))
-    (expander-result surface-stx expanded errors state)))
+    (expander-result surface-stxs expanded errors state)))
+
+;; expand-toplevel : [Listof Stx] Scope -> XSExpr
+;; Expands a list of top-level forms as an implicit block body.
+(define (expand-toplevel stxs scp)
+  (define scp^ (new-scope scp))
+  (define defs^ (expand-defs-pass1 stxs scp^))
+  (define defs^^ (expand-defs-pass2 defs^ scp^))
+  `(block ,@defs^^))
 
 ;; expand : SExpression -> SExpression
 ;; Legacy entry point for compatibility with existing tests.
@@ -389,14 +397,14 @@
         (with-stx-error-handling
           (define-values (marked-stx disjoined-scp) (expand-macro head-stx def scp))
           (with-disjoin (expand-def-pass1 marked-stx disjoined-scp) disjoined-scp))]
-       ;; unbound in head position - pass through the stx-error from scope-resolve
-       [(stx-error? binding) binding]
-       ;; variable in head position - not callable
-       [(var-binding? binding)
-        (stx-error head-stx "not a procedure or syntax" def head-stx)]
-       [else (stx-error #f "unexpected form" def head-stx)])]
-    ;; bare non-list (e.g. a bare identifier) - not a valid definition form
-    [_ (stx-error #f "not a definition form" def #f)]))
+       ;; unbound in head position - treat as expression
+       [(stx-error? binding) `(#%expression ,def)]
+       ;; variable in head position - treat as expression
+       [(var-binding? binding) `(#%expression ,def)]
+       ;; other keyword (e.g. let, if, block) in head position - treat as expression
+       [else `(#%expression ,def)])]
+    ;; bare non-list (e.g. a bare identifier or number) - treat as expression
+    [_ `(#%expression ,def)]))
 
 ;; expand-def-pass2 : Pass1Def Scope -> XDef
 ;; Second pass of definition expansion: expands all expressions.
@@ -906,10 +914,10 @@
 
 ;; find-node-at-position : ExpanderResult Loc -> (or/c Stx #f)
 ;; Given an LSP position (line+column), find the innermost surface syntax node
-;; at that position. Searches the surface syntax tree.
+;; at that position. Searches all top-level surface syntax trees.
 (define (find-node-at-position result pos)
   (define surface (expander-result-surface result))
-  (find-node-at-position-in surface pos))
+  (ormap (lambda (s) (find-node-at-position-in s pos)) surface))
 
 ;; find-node-at-position-in : Stx Loc -> (or/c Stx #f)
 ;; Finds the innermost surface syntax node containing the given position.
@@ -993,7 +1001,7 @@
     [else
      ;; Insert cursor and re-expand
      (define cursor (make-cursor pos))
-     (define with-cursor (insert-cursor-at (expander-result-surface result) pos cursor))
+     (define with-cursor (map (lambda (s) (insert-cursor-at s pos cursor)) (expander-result-surface result)))
      (define cursor-result (analyze! with-cursor))
      (get-names-in-scope cursor-result cursor)]))
 
@@ -1115,20 +1123,20 @@
     '(block (#%expression . (2))))
    '(block (#%expression 2)))
   
-  ;; fault-tolerant block
+  ;; fault-tolerant block: unbound call in definition context treated as expression
   (check-match
    (expand
     '(block
        (bad)
        (define x 2)))
    `(block
-      ,(? stx-error?)
+      (#%expression ,(? stx-error?))
       (define x0 2)))
 
-  ;; bare identifier in block - should produce stx-error, not crash
+  ;; bare identifier in block - treated as implicit #%expression
   (check-match
    (expand '(block x))
-   `(block ,(? stx-error?)))
+   `(block (#%expression ,(? stx-error?))))
   
   ;; datum literals
   (check-equal?

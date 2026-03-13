@@ -52,3 +52,13 @@ Define and document your data before you use it.
 ## Examples / Tests
 
 When writing functions, consider including at least one inline example or unit test that illustrates the expected input-output behavior, especially for non-trivial logic.
+
+## Verification Checklist
+
+Before finishing any code change, explicitly verify each of the following:
+
+1. **Ordering**: For every new or moved function, confirm all its callers appear *above* it in the file. A helper must never precede the function that calls it. Check this by scanning upward from each new function — if you see a caller defined below, swap the order.
+2. **Signatures**: Every new function has a type signature comment immediately above it.
+3. **Purpose statements**: Every new function has a one-to-two sentence purpose statement.
+
+Do not skip this checklist. Ordering mistakes are easy to make when inserting helpers adjacent to existing functions — the natural "define before use" instinct from other languages is backwards here.
