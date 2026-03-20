@@ -36,6 +36,7 @@
 (require "stx-quote.rkt")
 (require "reader.rkt")
 (require racket/hash)
+(require racket/pretty)
 
 ;; ============================================================
 ;; Data Definitions
@@ -102,6 +103,7 @@
 
 ;; A scope is a regular scope vertex with a parent edge and local bindings.
 (struct scope [parent bindings] #:transparent)
+(struct pvar-scope scope [] #:transparent)
 ;; parent : Scope
 ;; bindings : [MutableHashOf IdentifierKey Binding]
 
@@ -476,17 +478,7 @@
          (match clause
            [(stx-quote [,pat ,tmpl])
             (define pvar-scp (build-pvar-scope pat is-literal? def-scp))
-            (define pvar-only-scp (build-pvar-scope pat is-literal? initial-scope))
-            (record-pvar-resolutions! tmpl pvar-only-scp)]))]))
-
-;; pvar-scope? : Scope -> Boolean
-;; Returns #t if the scope's immediate bindings are all pattern-variable-bindings.
-(define (pvar-scope? scp)
-  (match scp
-    [(scope _parent bindings)
-     (for/and ([bnd (in-hash-values bindings)])
-       (pattern-variable-binding? bnd))]
-    [_ #f]))
+            (record-pvar-resolutions! tmpl pvar-scp)]))]))
 
 ;; build-pvar-scope : Pattern (Id -> Bool) Scope -> Scope
 ;; Builds a scope containing a pattern-variable-binding for each pvar in the pattern.
@@ -495,17 +487,17 @@
 ;; The scope's parent is def-scp so autocomplete traversal includes definition-site names.
 ;; The wildcard _ is excluded since it is never referenced in templates.
 (define (build-pvar-scope pat is-literal? def-scp)
-  (define pvar-scp (new-scope def-scp))
+  (define scp (pvar-scope def-scp (make-hash)))
   (let loop ([p pat])
     (match p
       [(? identifier? id)
        (unless (or (is-literal? id) (eq? (identifier-symbol id) '_))
-         (scope-bind! pvar-scp id (pattern-variable-binding id)))]
+         (scope-bind! scp id (pattern-variable-binding id)))]
       [(stx-quote (,a . ,d))
        (loop a)
        (loop d)]
       [_ (void)]))
-  pvar-scp)
+  scp)
 
 ;; record-pvar-resolutions! : Syntax Scope -> Void
 ;; Walks a template and records LSP resolutions for all template identifiers.
@@ -668,6 +660,8 @@
 (define (scope-snapshot scp)
   (match scp
     [(core-scope _) scp]  ; immutable hash, safe to share
+    [(pvar-scope parent bindings)
+     (pvar-scope (scope-snapshot parent) (hash-copy bindings))]
     [(scope parent bindings)
      (scope (scope-snapshot parent) (hash-copy bindings))]
     [(disjoin def-mark def-scp use-scp)
@@ -776,7 +770,8 @@
     ;; If binding has a surface site, record in references table
     (define site (and binding (not (stx-error? binding)) (binding-site binding)))
     (define def-spn (and site (stx-span site)))
-    (when def-spn
+    ;; We record resolutions for syntax templates, but only want
+    (when (and def-spn (if (pvar-scope? scp) (pattern-variable-binding? binding) #t))
       (hash-cons! (expander-state-references state) def-spn ref-spn))))
 
 ;; binding-site : Binding -> (or/c Identifier #f)
@@ -865,36 +860,38 @@
                #:key stx-span))))
       '()))
 
-;; scope->names : Scope [Listof Mark] -> (Set Symbol)
+;; scope->names : Scope (Listof Mark) #:include-binding? [Binding -> Boolean] -> (Set Symbol)
 ;; Traverse scope graph to collect names accessible with the given marks.
 ;; Only returns names whose binding keys have marks matching the current marks.
 ;; At disjoins, drops the top mark when traversing the matching edge.
-(define (scope->names scp marks)
+(define (scope->names scp marks #:include-binding? [include-binding? (lambda (_) #t)])
   (match scp
     [(core-scope bindings)
-     (for/seteq ([key (in-hash-keys bindings)]
-                 #:when (equal? (identifier-key-marks key) marks))
+     (for/seteq ([(key bnd) (in-hash bindings)]
+                 #:when (equal? (identifier-key-marks key) marks)
+                 #:when (include-binding? bnd))
        (identifier-key-symbol key))]
     [(scope parent bindings)
      (set-union
-      (for/seteq ([key (in-hash-keys bindings)]
-                  #:when (equal? (identifier-key-marks key) marks))
+      (for/seteq ([(key bnd) (in-hash bindings)]
+                  #:when (equal? (identifier-key-marks key) marks)
+                  #:when (include-binding? bnd))
         (identifier-key-symbol key))
-      (scope->names parent marks))]
+      (scope->names parent marks #:include-binding? include-binding?))]
     [(disjoin def-mark def-scp use-scp)
      (cond
        [(and (pair? marks) (eq? (car marks) def-mark))
-        (scope->names def-scp (cdr marks))]
+        (scope->names def-scp (cdr marks) #:include-binding? include-binding?)]
        [else
-        (scope->names use-scp marks)])]))
+        (scope->names use-scp marks #:include-binding? include-binding?)])]))
 
-;; get-names-in-scope : ExpanderResult Stx -> (Set Symbol)
+;; get-names-available-at : ExpanderResult Stx -> (Set Symbol)
 ;; Returns the names in scope at the given syntax node.
 ;; Uses the Resolution's ref-stx marks and scope to traverse the graph.
 ;; If the node was resolved under multiple scopes (macro duplication),
 ;; returns the intersection of names from all scopes.
 ;; Pattern variables are always included (union) instead of intersected.
-(define (get-names-in-scope result stx-node)
+(define (get-names-available-at result stx-node)
   (let/ec return
     (define spn (stx-span stx-node))
     (unless spn (return (seteq)))
@@ -916,11 +913,9 @@
     (define pvar-name-sets
       (for/list ([res res-list]
                  #:when (pvar-scope? (resolution-scp res)))
-        (match (resolution-scp res)
-          [(scope _parent bindings)
-           (for/seteq ([bnd (in-hash-values bindings)])
-             (identifier-symbol (pattern-variable-binding-site bnd)))]
-          [_ (seteq)])))
+        (scope->names (resolution-scp res)
+                      (identifier-marks (resolution-ref-stx res))
+                      #:include-binding? pattern-variable-binding?)))
     (define pvar-names
       (apply set-union (seteq) pvar-name-sets))
     ;; Union regular names with pattern variables
@@ -1025,14 +1020,14 @@
   (define node (find-node-at-position result pos))
   (cond
     [(and node (identifier? node))
-     (get-names-in-scope result node)]
+     (get-names-available-at result node)]
     [else
      ;; Insert cursor and re-expand
      (define cursor (make-cursor pos))
      (define with-cursor (map (lambda (s) (insert-cursor-at s pos cursor)) (expander-result-surface result)))
      (define cursor-result (analyze! with-cursor))
      ;; Remove the cursor's own symbol from results
-     (set-remove (get-names-in-scope cursor-result cursor)
+     (set-remove (get-names-available-at cursor-result cursor)
                  (identifier-symbol cursor))]))
 
 ;; make-cursor : Loc -> Stx

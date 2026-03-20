@@ -1955,6 +1955,19 @@
     (check-not-false
      (member (hasheq 'label "y") completions)
      "Template-introduced y should appear in autocomplete"))
+  (test-case "bug #42: hygiene in pattern variables matters for autocomplete"
+    (define source
+      "(define-syntax m
+         (syntax-rules ()
+           [(m x) (let-syntax ([m2 (syntax-rules () [(m2 y) x])]) (m2 2))]))
+       (define foo 2)
+       (m HERE)")
+    (define completions (autocomplete source (find-position source "HERE" 0)))
+    ;; Should include both x (from pvar resolution) and y (from use-site expansion)
+    (check-equal?
+      completions
+      (list (hasheq 'label "foo")
+            (hasheq 'label "m"))))
 )
 
 ;; Helper: Replace identifier at position with a new name
