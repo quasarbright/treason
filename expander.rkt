@@ -1,4 +1,5 @@
 #lang racket
+(require (only-in racket/base [gensym racket-gensym]))
 
 ;; LSP-enabled macro expander
 ;;
@@ -103,7 +104,6 @@
 
 ;; A scope is a regular scope vertex with a parent edge and local bindings.
 (struct scope [parent bindings] #:transparent)
-(struct pvar-scope scope [] #:transparent)
 ;; parent : Scope
 ;; bindings : [MutableHashOf IdentifierKey Binding]
 
@@ -487,7 +487,7 @@
 ;; The scope's parent is def-scp so autocomplete traversal includes definition-site names.
 ;; The wildcard _ is excluded since it is never referenced in templates.
 (define (build-pvar-scope pat is-literal? def-scp)
-  (define scp (pvar-scope def-scp (make-hash)))
+  (define scp (scope def-scp (make-hash)))
   (let loop ([p pat])
     (match p
       [(? identifier? id)
@@ -500,18 +500,32 @@
   scp)
 
 ;; record-pvar-resolutions! : Syntax Scope -> Void
-;; Walks a template and records LSP resolutions for all template identifiers.
-;; Pattern variable resolutions enable goto-definition and find-references.
-;; All template identifiers get resolutions so autocomplete can include pvars in scope.
+;; Walks a template and records LSP resolutions for pattern variable identifiers
+;; and cursor identifiers. Pattern variable resolutions enable goto-definition and
+;; find-references. Cursor resolutions enable cursor-driven autocomplete to include
+;; pvars in scope. Non-pvar, non-cursor template identifiers are skipped to avoid
+;; spuriously highlighting them (e.g. let, if) in unused macros.
 (define (record-pvar-resolutions! tmpl pvar-scp)
   (match tmpl
     [(? identifier? id)
      (define bnd (scope-resolve-internal pvar-scp id))
-     (record-resolution! id (if (stx-error? bnd) #f bnd) pvar-scp)]
+     (when (or (pattern-variable-binding? bnd) (cursor-identifier? id))
+       (record-resolution! id (if (stx-error? bnd) #f bnd) pvar-scp))]
     [(stx-quote (,a . ,d))
      (record-pvar-resolutions! a pvar-scp)
      (record-pvar-resolutions! d pvar-scp)]
     [_ (void)]))
+
+;; cursor-identifier? : Stx -> Boolean
+;; Returns #t if the stx is a cursor — an identifier with a zero-width span
+;; and an uninterned gensym'd symbol starting with "cursor".
+(define (cursor-identifier? stx-node)
+  (and (identifier? stx-node)
+       (let ([sym (identifier-symbol stx-node)])
+         (and (not (symbol-interned? sym))
+              (string-prefix? (symbol->string sym) "cursor")))
+       (let ([spn (stx-span stx-node)])
+         (and spn (equal? (span-start spn) (span-end spn))))))
 
 ;; ============================================================
 ;; Syntax-Rules Matching
@@ -660,8 +674,6 @@
 (define (scope-snapshot scp)
   (match scp
     [(core-scope _) scp]  ; immutable hash, safe to share
-    [(pvar-scope parent bindings)
-     (pvar-scope (scope-snapshot parent) (hash-copy bindings))]
     [(scope parent bindings)
      (scope (scope-snapshot parent) (hash-copy bindings))]
     [(disjoin def-mark def-scp use-scp)
@@ -770,8 +782,7 @@
     ;; If binding has a surface site, record in references table
     (define site (and binding (not (stx-error? binding)) (binding-site binding)))
     (define def-spn (and site (stx-span site)))
-    ;; We record resolutions for syntax templates, but only want
-    (when (and def-spn (if (pvar-scope? scp) (pattern-variable-binding? binding) #t))
+    (when def-spn
       (hash-cons! (expander-state-references state) def-spn ref-spn))))
 
 ;; binding-site : Binding -> (or/c Identifier #f)
@@ -889,8 +900,7 @@
 ;; Returns the names in scope at the given syntax node.
 ;; Uses the Resolution's ref-stx marks and scope to traverse the graph.
 ;; If the node was resolved under multiple scopes (macro duplication),
-;; returns the intersection of names from all scopes.
-;; Pattern variables are always included (union) instead of intersected.
+;; returns the union of names from all scopes.
 (define (get-names-available-at result stx-node)
   (let/ec return
     (define spn (stx-span stx-node))
@@ -898,28 +908,10 @@
     (define resolutions (expander-state-resolutions (expander-result-state result)))
     (define res-list (hash-ref resolutions spn '()))
     (when (null? res-list) (return (seteq)))
-    ;; Separate resolutions into pvar-scope and regular resolutions
-    (define regular-scope-names
-      (for/list ([res res-list]
-                 #:unless (pvar-scope? (resolution-scp res)))
-        (scope->names (resolution-scp res)
-                      (identifier-marks (resolution-ref-stx res)))))
-    ;; Intersect regular scope names
-    (define regular-names
-      (if (null? regular-scope-names)
-          (seteq)
-          (apply set-intersect regular-scope-names)))
-    ;; Extract pattern variables from pvar-scope bindings
-    (define pvar-name-sets
-      (for/list ([res res-list]
-                 #:when (pvar-scope? (resolution-scp res)))
-        (scope->names (resolution-scp res)
-                      (identifier-marks (resolution-ref-stx res))
-                      #:include-binding? pattern-variable-binding?)))
-    (define pvar-names
-      (apply set-union (seteq) pvar-name-sets))
-    ;; Union regular names with pattern variables
-    (set-union regular-names pvar-names)))
+    (apply set-union (seteq)
+           (for/list ([res res-list])
+             (scope->names (resolution-scp res)
+                           (identifier-marks (resolution-ref-stx res)))))))
 
 ;; get-all-surface-binding-sites : ExpanderResult -> (Listof Stx)
 ;; Returns all surface binding sites in the program.
@@ -1014,29 +1006,30 @@
 
 ;; autocomplete : ExpanderResult Loc -> (Set Symbol)
 ;; Returns names in scope at position.
-;; If position is at an identifier, uses its recorded resolution.
+;; If position is at an identifier, replaces it with a cursor and re-expands.
 ;; Otherwise, inserts a cursor and re-expands to find names in scope.
+;; Always uses cursor-driven expansion so special autocomplete behavior is
+;; confined to cursor detection and doesn't affect other LSP consumers.
 (define (autocomplete result pos)
   (define node (find-node-at-position result pos))
-  (cond
-    [(and node (identifier? node))
-     (get-names-available-at result node)]
-    [else
-     ;; Insert cursor and re-expand
-     (define cursor (make-cursor pos))
-     (define with-cursor (map (lambda (s) (insert-cursor-at s pos cursor)) (expander-result-surface result)))
-     (define cursor-result (analyze! with-cursor))
-     ;; Remove the cursor's own symbol from results
-     (set-remove (get-names-available-at cursor-result cursor)
-                 (identifier-symbol cursor))]))
+  (define cursor (make-cursor pos))
+  (define with-cursor
+    (if (and node (identifier? node))
+        ;; Replace the identifier with the cursor
+        (map (lambda (s) (replace-node-with-cursor s node cursor)) (expander-result-surface result))
+        ;; Insert cursor at position
+        (map (lambda (s) (insert-cursor-at s pos cursor)) (expander-result-surface result))))
+  (define cursor-result (analyze! with-cursor))
+  ;; Remove the cursor's own symbol from results
+  (set-remove (get-names-available-at cursor-result cursor)
+              (identifier-symbol cursor)))
 
 ;; make-cursor : Loc -> Stx
 ;; Creates a cursor identifier at the given position.
-;; It's a normal surface identifier with a gensym'd name and a zero-width span.
+;; Uses gensym to produce an uninterned symbol, enabling cursor-identifier? detection.
 (define (make-cursor pos)
   (define zero-span (span pos pos))
-  ;; Use Racket's built-in gensym to avoid needing gensym-ctr parameter
-  (stx (string->symbol (format "cursor~a" (random 1000000))) zero-span '()))
+  (stx (racket-gensym 'cursor) zero-span '()))
 
 ;; insert-cursor-at : Stx Loc -> Stx
 ;; Inserts a cursor identifier at the given position in the syntax tree.
@@ -1102,6 +1095,25 @@
             ;; Continue searching
             (cons head (insert-cursor-in-elems rest pos cursor)))])]))
 
+;; replace-node-with-cursor : Stx Stx Stx -> Stx
+;; Replaces the target node with the cursor in the syntax tree.
+;; Uses object identity (eq?) to find the target.
+(define (replace-node-with-cursor root target cursor)
+  (let loop ([syn root])
+    (if (eq? syn target)
+        cursor
+        (match syn
+          [(stx e spn marks)
+           (cond
+             [(list? e)
+              (define new-elems (map loop e))
+              (if (equal? new-elems e) syn (stx new-elems spn marks))]
+             [(pair? e)
+              (define new-e (cons (loop (car e)) (loop (cdr e))))
+              (if (equal? new-e e) syn (stx new-e spn marks))]
+             [else syn])]
+          [_ syn]))))
+
 ;; ============================================================
 ;; Tests
 ;; ============================================================
@@ -1109,6 +1121,26 @@
 (module+ test
   (require rackunit)
   
+  ;; cursor-identifier? tests
+  (let* ([zero-loc (loc "test.tsn" 0 5)]
+         [zero-span (span zero-loc zero-loc)]
+         [nonzero-span (span (loc "test.tsn" 0 5) (loc "test.tsn" 0 10))])
+    ;; A cursor produced by make-cursor satisfies cursor-identifier?
+    (check-true (cursor-identifier? (make-cursor zero-loc))
+                "make-cursor produces a cursor-identifier?")
+    ;; An interned symbol named "cursor123" with zero-width span is NOT a cursor
+    (check-false (cursor-identifier? (stx 'cursor123 zero-span '()))
+                 "interned symbol starting with cursor is not a cursor")
+    ;; An uninterned gensym starting with "cursor" but with a real span is NOT a cursor
+    (check-false (cursor-identifier? (stx (racket-gensym 'cursor) nonzero-span '()))
+                 "cursor gensym with non-zero-width span is not a cursor")
+    ;; An uninterned gensym NOT starting with "cursor" with a zero-width span is NOT a cursor
+    (check-false (cursor-identifier? (stx (racket-gensym 'foo) zero-span '()))
+                 "uninterned gensym not starting with cursor is not a cursor")
+    ;; A non-identifier (number) is not a cursor
+    (check-false (cursor-identifier? (stx 42 zero-span '()))
+                 "non-identifier stx is not a cursor"))
+
   ;; The example from Fig. 17.
   (check-equal?
    (expand

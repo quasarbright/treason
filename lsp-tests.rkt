@@ -1968,6 +1968,49 @@
       completions
       (list (hasheq 'label "foo")
             (hasheq 'label "m"))))
+
+  ;; ============================================================
+  ;; Issue #51: union instead of intersection for macro duplication
+  ;; ============================================================
+
+  (test-case "bug #51: autocomplete union includes all macro-duplicated names"
+    ;; m1 expands to (begin (m3 1 a b c) (m3 2 a b c)).
+    ;; m3 clause 1 binds x=a, clause 2 binds y=b.
+    ;; Intersection would give neither i nor j; union gives both.
+    ;; a, b, c are pattern variables and should not appear (they are not in scope at the use site).
+    (define source
+      "(define-syntax m1
+         (syntax-rules ()
+           [(m1 a b c) (begin (m3 1 a b c) (m3 2 a b c))]))
+       (define-syntax m3
+         (syntax-rules ()
+           [(m3 1 x y z) (let ([x y]) z)]
+           [(m3 2 x y z) (let ([y x]) z)]))
+       (m1 i j HERE)")
+    (define completions (autocomplete source (find-position source "HERE" 0)))
+    (check-not-false (member (hasheq 'label "i") completions)
+                     "i should appear in completions with union semantics")
+    (check-not-false (member (hasheq 'label "j") completions)
+                     "j should appear in completions with union semantics")
+    (check-false (member (hasheq 'label "a") completions)
+                 "a (pattern variable of m1) should not appear in completions")
+    (check-false (member (hasheq 'label "b") completions)
+                 "b (pattern variable of m1) should not appear in completions")
+    (check-false (member (hasheq 'label "c") completions)
+                 "c (pattern variable of m1) should not appear in completions"))
+
+  ;; ============================================================
+  ;; Issue #51: template identifiers should not be highlighted in unused macros
+  ;; ============================================================
+
+  (test-case "bug #51: template identifiers not highlighted in unused macro"
+    ;; let in the template should not be highlighted when the macro is never used,
+    ;; since it hasn't been resolved as a real reference.
+    (define source "(define-syntax m (syntax-rules () [(m) (let ([x 1]) x)]))")
+    (define tokens (semantic-tokens source))
+    ;; No token in the output should be for the symbol 'let
+    (check-false (member #t (map (lambda (t) (eq? (token-name t) 'let)) tokens))
+                 "let in unused macro template should not appear in semantic tokens"))
 )
 
 ;; Helper: Replace identifier at position with a new name
