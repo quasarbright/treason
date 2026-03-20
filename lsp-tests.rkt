@@ -1913,6 +1913,48 @@
     (check-equal?
      (semantic-tokens "42")
      (list (token 42 'number '()))))
+
+  ;; ============================================================
+  ;; Issue #47: cursor gensym should not appear in autocomplete
+  ;; ============================================================
+
+  (test-case "bug #47: cursor does not appear in autocomplete"
+    ;; From the issue: when cursor is inserted, it binds to itself and appears in results
+    ;; This tests the exact example from the issue
+    (define source
+      "(define-syntax m (syntax-rules () [(m x) (let ([x 1]) x)]))\n(m )")
+    ;; Test autocomplete at the argument to m
+    ;; The cursor gensym should NOT appear in the results
+    (define completions (autocomplete source (hash 'line 1 'character 3)))
+    ;; Check that no completion label starts with "cursor"
+    (for ([completion completions])
+      (define label (hash-ref completion 'label))
+      (check-false (string-prefix? label "cursor")
+                   (format "Found cursor in autocomplete: ~a" label))))
+
+  ;; ============================================================
+  ;; Issue #42: pattern variables should appear in autocomplete
+  ;; ============================================================
+
+  (test-case "bug #42: pattern variable appears in template autocomplete (simple case)"
+    ;; At HERE in the template, x should be in autocomplete
+    (define source "(let-syntax ([m (syntax-rules () [(m x) HERE])]) 1)")
+    (define completions (autocomplete source (find-position source "HERE" 0)))
+    (check-not-false
+     (member (hasheq 'label "x") completions)
+     "Pattern variable x should appear in autocomplete at template position"))
+
+  (test-case "bug #42: template shows both pattern var and template-introduced binding"
+    ;; At HERE in template, should see both x (pattern var) and y (template-introduced)
+    (define source "(let-syntax ([m (syntax-rules () [(m x) (let ([y 1]) HERE)])]) (m q))")
+    (define completions (autocomplete source (find-position source "HERE" 0)))
+    ;; Should include both x (from pvar resolution) and y (from use-site expansion)
+    (check-not-false
+     (member (hasheq 'label "x") completions)
+     "Pattern variable x should appear in autocomplete")
+    (check-not-false
+     (member (hasheq 'label "y") completions)
+     "Template-introduced y should appear in autocomplete"))
 )
 
 ;; Helper: Replace identifier at position with a new name

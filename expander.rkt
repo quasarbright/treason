@@ -476,7 +476,17 @@
          (match clause
            [(stx-quote [,pat ,tmpl])
             (define pvar-scp (build-pvar-scope pat is-literal? def-scp))
-            (record-pvar-resolutions! tmpl pvar-scp)]))]))
+            (define pvar-only-scp (build-pvar-scope pat is-literal? initial-scope))
+            (record-pvar-resolutions! tmpl pvar-only-scp)]))]))
+
+;; pvar-scope? : Scope -> Boolean
+;; Returns #t if the scope's immediate bindings are all pattern-variable-bindings.
+(define (pvar-scope? scp)
+  (match scp
+    [(scope _parent bindings)
+     (for/and ([bnd (in-hash-values bindings)])
+       (pattern-variable-binding? bnd))]
+    [_ #f]))
 
 ;; build-pvar-scope : Pattern (Id -> Bool) Scope -> Scope
 ;; Builds a scope containing a pattern-variable-binding for each pvar in the pattern.
@@ -498,16 +508,14 @@
   pvar-scp)
 
 ;; record-pvar-resolutions! : Syntax Scope -> Void
-;; Walks a template and records LSP resolutions for pattern variable references.
-;; For each identifier that resolves to a pattern-variable-binding in pvar-scp,
-;; records the resolution so goto-definition and find-references work on template uses.
-;; Template-introduced identifiers that don't resolve to pvars are silently skipped.
+;; Walks a template and records LSP resolutions for all template identifiers.
+;; Pattern variable resolutions enable goto-definition and find-references.
+;; All template identifiers get resolutions so autocomplete can include pvars in scope.
 (define (record-pvar-resolutions! tmpl pvar-scp)
   (match tmpl
     [(? identifier? id)
      (define bnd (scope-resolve-internal pvar-scp id))
-     (when (pattern-variable-binding? bnd)
-       (record-resolution! id bnd pvar-scp))]
+     (record-resolution! id (if (stx-error? bnd) #f bnd) pvar-scp)]
     [(stx-quote (,a . ,d))
      (record-pvar-resolutions! a pvar-scp)
      (record-pvar-resolutions! d pvar-scp)]
@@ -766,7 +774,7 @@
     (hash-cons! (expander-state-resolutions state) ref-spn
                 (resolution binding ref-stx (scope-snapshot scp)))
     ;; If binding has a surface site, record in references table
-    (define site (and binding (binding-site binding)))
+    (define site (and binding (not (stx-error? binding)) (binding-site binding)))
     (define def-spn (and site (stx-span site)))
     (when def-spn
       (hash-cons! (expander-state-references state) def-spn ref-spn))))
@@ -885,18 +893,38 @@
 ;; Uses the Resolution's ref-stx marks and scope to traverse the graph.
 ;; If the node was resolved under multiple scopes (macro duplication),
 ;; returns the intersection of names from all scopes.
+;; Pattern variables are always included (union) instead of intersected.
 (define (get-names-in-scope result stx-node)
-  (define spn (stx-span stx-node))
-  (define resolutions (expander-state-resolutions (expander-result-state result)))
-  (if spn
-      (let ([res-list (hash-ref resolutions spn '())])
-        (if (null? res-list)
-            (seteq)
-            (apply set-intersect
-                   (for/list ([res res-list])
-                     (scope->names (resolution-scp res)
-                                   (identifier-marks (resolution-ref-stx res)))))))
-      (seteq)))
+  (let/ec return
+    (define spn (stx-span stx-node))
+    (unless spn (return (seteq)))
+    (define resolutions (expander-state-resolutions (expander-result-state result)))
+    (define res-list (hash-ref resolutions spn '()))
+    (when (null? res-list) (return (seteq)))
+    ;; Separate resolutions into pvar-scope and regular resolutions
+    (define regular-scope-names
+      (for/list ([res res-list]
+                 #:unless (pvar-scope? (resolution-scp res)))
+        (scope->names (resolution-scp res)
+                      (identifier-marks (resolution-ref-stx res)))))
+    ;; Intersect regular scope names
+    (define regular-names
+      (if (null? regular-scope-names)
+          (seteq)
+          (apply set-intersect regular-scope-names)))
+    ;; Extract pattern variables from pvar-scope bindings
+    (define pvar-name-sets
+      (for/list ([res res-list]
+                 #:when (pvar-scope? (resolution-scp res)))
+        (match (resolution-scp res)
+          [(scope _parent bindings)
+           (for/seteq ([bnd (in-hash-values bindings)])
+             (identifier-symbol (pattern-variable-binding-site bnd)))]
+          [_ (seteq)])))
+    (define pvar-names
+      (apply set-union (seteq) pvar-name-sets))
+    ;; Union regular names with pattern variables
+    (set-union regular-names pvar-names)))
 
 ;; get-all-surface-binding-sites : ExpanderResult -> (Listof Stx)
 ;; Returns all surface binding sites in the program.
@@ -1003,7 +1031,9 @@
      (define cursor (make-cursor pos))
      (define with-cursor (map (lambda (s) (insert-cursor-at s pos cursor)) (expander-result-surface result)))
      (define cursor-result (analyze! with-cursor))
-     (get-names-in-scope cursor-result cursor)]))
+     ;; Remove the cursor's own symbol from results
+     (set-remove (get-names-in-scope cursor-result cursor)
+                 (identifier-symbol cursor))]))
 
 ;; make-cursor : Loc -> Stx
 ;; Creates a cursor identifier at the given position.
