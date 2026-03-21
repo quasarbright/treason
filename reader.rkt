@@ -185,6 +185,10 @@
                       (char=? next-ch #\]))))
            ;; It's a dot - parse the tail
            (let ()
+             (when (null? elements)
+               (parse-error! "unexpected dot at beginning of list"
+                             (span (loc (source) (line) (col))
+                                   (loc (source) (line) (add1 (col))))))
              (advance!)  ; skip the dot
              (skip-whitespace!)
              (define tail-stx (parse))
@@ -224,7 +228,7 @@
   (define start-line (line))
   (define start-col (col))
   (define start-pos (pos))
-  
+
   ;; Find end of atom
   (let loop ()
     (unless (at-end?)
@@ -237,8 +241,12 @@
                   (char=? ch #\;))
         (advance!)
         (loop))))
-  
+
   (define atom-str (substring (text) start-pos (pos)))
+  (when (string=? atom-str "")
+    (parse-error! "unexpected delimiter, expected atom"
+                  (span (loc (source) start-line start-col)
+                        (loc (source) (line) (col)))))
   (define atom-val
     (or (string->number atom-str)
         (string->symbol atom-str)))

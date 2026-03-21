@@ -170,4 +170,26 @@
                                      (loc-column (span-end sp))))
           (check-true (< start end)
                       (format "span should be non-empty for ~v in ~v"
-                              (stx-e atom) src))))))))
+                              (stx-e atom) src)))))))
+
+  ;; ============================================================
+  ;; Malformed improper list tests
+  ;; ============================================================
+
+  ;; Test that dotted pair missing cdr raises parse error
+  (test-case
+   "malformed improper list: missing cdr after dot"
+   (check-exn exn:fail:parse?
+              (lambda () (string->stx 'test "(a . )"))))
+
+  ;; Test that dot at beginning of list raises parse error
+  (test-case
+   "malformed improper list: dot at beginning"
+   (check-exn exn:fail:parse?
+              (lambda () (string->stx 'test "(. a)"))))
+
+  ;; Test that only a dot in list raises parse error
+  (test-case
+   "malformed improper list: only dot"
+   (check-exn exn:fail:parse?
+              (lambda () (string->stx 'test "(.)")))))
