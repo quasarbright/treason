@@ -2000,6 +2000,36 @@
                  "c (pattern variable of m1) should not appear in completions"))
 
   ;; ============================================================
+  ;; Autocomplete at top level (not on an identifier)
+  ;; ============================================================
+
+  (test-case "autocomplete at top level after definitions"
+    ;; Cursor is at the end of the file, not on any identifier
+    (define source "(define x 1)\n(define y 2)")
+    ;; Position after the last character
+    (define pos (hash 'line 1 'character 12))
+    (check-equal?
+     (autocomplete source pos)
+     (list (hasheq 'label "x") (hasheq 'label "y"))))
+
+  (test-case "autocomplete at top level between definitions"
+    ;; Cursor is between two definitions in whitespace
+    (define source "(define x 1)\n\n(define y 2)")
+    ;; Position on the empty line (line 1)
+    (define pos (hash 'line 1 'character 0))
+    (check-equal?
+     (autocomplete source pos)
+     (list (hasheq 'label "x") (hasheq 'label "y"))))
+
+  (test-case "autocomplete at very start of file"
+    ;; Cursor is at the beginning before any definitions
+    (define source "(define x 1)")
+    (define pos (hash 'line 0 'character 0))
+    (check-equal?
+     (autocomplete source pos)
+     (list (hasheq 'label "x"))))
+
+  ;; ============================================================
   ;; Issue #51: template identifiers should not be highlighted in unused macros
   ;; ============================================================
 

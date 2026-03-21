@@ -936,23 +936,28 @@
 
 ;; find-node-at-position-in : Stx Loc -> (or/c Stx #f)
 ;; Finds the innermost surface syntax node containing the given position.
+;; For lists/pairs, position at the opening paren is NOT considered inside.
+;; For identifiers/atoms, position at the start IS considered inside.
 (define (find-node-at-position-in root pos)
   (let loop ([syn root])
     (match syn
       [(stx e spn _marks)
        (cond
-         ;; If this node has a span and contains the position, check children first
-         [(and spn (span-contains? spn pos))
-          (cond
-            [(list? e)
-             (or (ormap loop e)
-                 syn)]
-            [(pair? e)
-             (or (loop (car e))
-                 (loop (cdr e))
-                 syn)]
-            [else
-             syn])]
+         ;; Lists: pos must be strictly after start and < end
+         [(and spn (list? e)
+               (loc<? (span-start spn) pos)
+               (loc<? pos (span-end spn)))
+          (or (ormap loop e) syn)]
+         ;; Pairs: pos must be strictly after start and < end
+         [(and spn (pair? e)
+               (loc<? (span-start spn) pos)
+               (loc<? pos (span-end spn)))
+          (or (loop (car e)) (loop (cdr e)) syn)]
+         ;; Atoms (not list/pair): pos can be at start (>= start and <= end)
+         [(and spn (not (or (list? e) (pair? e)))
+               (loc<=? (span-start spn) pos)
+               (loc<=? pos (span-end spn)))
+          syn]
          ;; No span or doesn't contain position - try children anyway
          [(list? e) (ormap loop e)]
          [(pair? e) (or (loop (car e)) (loop (cdr e)))]
@@ -1010,19 +1015,36 @@
 ;; Otherwise, inserts a cursor and re-expands to find names in scope.
 ;; Always uses cursor-driven expansion so special autocomplete behavior is
 ;; confined to cursor detection and doesn't affect other LSP consumers.
+;; autocomplete : ExpanderResult Loc -> (Setof Symbol)
 (define (autocomplete result pos)
-  (define node (find-node-at-position result pos))
+  (define surface (expander-result-surface result))
   (define cursor (make-cursor pos))
-  (define with-cursor
-    (if (and node (identifier? node))
-        ;; Replace the identifier with the cursor
-        (map (lambda (s) (replace-node-with-cursor s node cursor)) (expander-result-surface result))
-        ;; Insert cursor at position
-        (map (lambda (s) (insert-cursor-at s pos cursor)) (expander-result-surface result))))
+  (define with-cursor (insert-or-replace-cursor surface pos cursor))
   (define cursor-result (analyze! with-cursor))
   ;; Remove the cursor's own symbol from results
   (set-remove (get-names-available-at cursor-result cursor)
               (identifier-symbol cursor)))
+
+;; insert-or-replace-cursor : (Listof Stx) Loc Stx -> (Listof Stx)
+;; Inserts or replaces cursor in the syntax tree based on the position.
+;; Returns a new list of top-level forms with the cursor inserted.
+(define (insert-or-replace-cursor surface pos cursor)
+  (define node (find-node-at-position-in-list surface pos))
+  (cond
+    ;; Case 1: cursor is on an identifier - replace it
+    [(and node (identifier? node))
+     (map (lambda (s) (replace-node-with-cursor s node cursor)) surface)]
+    ;; Case 2: cursor is inside a non-identifier node - insert into it
+    [node
+     (map (lambda (s) (insert-cursor-at s pos cursor)) surface)]
+    ;; Case 3: cursor is not in any node - insert as new top-level form
+    [else
+     (insert-cursor-at-toplevel surface pos cursor)]))
+
+;; find-node-at-position-in-list : (Listof Stx) Loc -> (or/c Stx #f)
+;; Finds the innermost surface syntax node at the given position in a list of forms.
+(define (find-node-at-position-in-list forms pos)
+  (ormap (lambda (s) (find-node-at-position-in s pos)) forms))
 
 ;; make-cursor : Loc -> Stx
 ;; Creates a cursor identifier at the given position.
@@ -1031,30 +1053,57 @@
   (define zero-span (span pos pos))
   (stx (racket-gensym 'cursor) zero-span '()))
 
+;; insert-cursor-at-toplevel : (Listof Stx) Loc Stx -> (Listof Stx)
+;; Inserts cursor as a new top-level form at the appropriate position.
+;; Compares span endpoints to determine where to insert.
+(define (insert-cursor-at-toplevel forms pos cursor)
+  (insert-cursor-in-list forms pos cursor))
+
+;; insert-cursor-in-list : (Listof Stx) Loc Stx -> (Listof Stx)
+;; Inserts cursor into a list of stx elements at the appropriate position.
+;; Compares position with span starts to find insertion point.
+;; If pos <= span-start of an element, insert cursor before that element.
+(define (insert-cursor-in-list elems pos cursor)
+  (cond
+    [(null? elems) (list cursor)]
+    [else
+     (define head (car elems))
+     (define rest (cdr elems))
+     (define spn (stx-span head))
+     (if (and spn (loc<=? pos (span-start spn)))
+         (cons cursor elems)
+         (cons head (insert-cursor-in-list rest pos cursor)))]))
+
 ;; insert-cursor-at : Stx Loc -> Stx
 ;; Inserts a cursor identifier at the given position in the syntax tree.
 ;; Finds the appropriate list position and inserts the cursor there.
+;; For lists/pairs, position must be strictly after start.
 (define (insert-cursor-at root pos cursor)
   (let loop ([syn root])
     (match syn
       [(stx e spn marks)
        (cond
          ;; Empty list node - insert cursor here if position is nearby
-         [(and (null? e) spn (span-contains-or-at? spn pos))
+         [(and (null? e) spn
+               (loc<=? (span-start spn) pos)
+               (loc<=? pos (span-end spn)))
           (stx (list cursor) spn marks)]
-         ;; If this is a list node and the position is inside it,
-         ;; try to insert the cursor in the right place
-         [(and spn (list? e) (not (null? e)) (span-contains? spn pos))
+         ;; Non-empty list: position must be strictly after start and before end
+         [(and spn (list? e) (not (null? e))
+               (loc<? (span-start spn) pos)
+               (loc<? pos (span-end spn)))
           (define new-elems (map loop e))
           (if (equal? new-elems e)
               ;; No child changed, insert cursor at the right position
-              (stx (insert-cursor-in-elems e pos cursor) spn marks)
+              (stx (insert-cursor-in-list e pos cursor) spn marks)
               (stx new-elems spn marks))]
          [(and (list? e) (not (null? e)))
           (define new-elems (map loop e))
           (if (equal? new-elems e) syn (stx new-elems spn marks))]
-         ;; Dotted pair
-         [(and spn (pair? e) (span-contains? spn pos))
+         ;; Dotted pair: position must be strictly after start and before end
+         [(and spn (pair? e)
+               (loc<? (span-start spn) pos)
+               (loc<? pos (span-end spn)))
           (define new-car (loop (car e)))
           (define new-cdr (loop (cdr e)))
           (stx (cons new-car new-cdr) spn marks)]
@@ -1066,34 +1115,6 @@
               (stx (cons new-car new-cdr) spn marks))]
          [else syn])]
       [_ syn])))
-
-;; span-contains-or-at? : Span Loc -> Boolean
-;; Returns #t if the span contains the position or the position is at the end.
-(define (span-contains-or-at? spn pos)
-  (and (loc<=? (span-start spn) pos)
-       (loc<=? pos (span-end spn))))
-
-;; insert-cursor-in-elems : (Listof Stx) Loc Stx -> (Listof Stx)
-;; Inserts cursor into a list of stx elements at the appropriate position.
-(define (insert-cursor-in-elems elems pos cursor)
-  (cond
-    [(null? elems) (list cursor)]
-    [else
-     (define head (car elems))
-     (define rest (cdr elems))
-     (cond
-       [(null? rest)
-        ;; Last element - insert cursor after it
-        (list head cursor)]
-       [else
-        ;; Check if cursor should go before the next element
-        (define next (car rest))
-        (if (and (stx? next) (stx-span next)
-                 (loc<? pos (span-start (stx-span next))))
-            ;; Insert cursor before next
-            (cons head (cons cursor rest))
-            ;; Continue searching
-            (cons head (insert-cursor-in-elems rest pos cursor)))])]))
 
 ;; replace-node-with-cursor : Stx Stx Stx -> Stx
 ;; Replaces the target node with the cursor in the syntax tree.
@@ -1120,7 +1141,8 @@
 
 (module+ test
   (require rackunit)
-  
+  (require "reader.rkt")
+
   ;; cursor-identifier? tests
   (let* ([zero-loc (loc "test.tsn" 0 5)]
          [zero-span (span zero-loc zero-loc)]
@@ -1140,6 +1162,73 @@
     ;; A non-identifier (number) is not a cursor
     (check-false (cursor-identifier? (stx 42 zero-span '()))
                  "non-identifier stx is not a cursor"))
+
+  ;; insert-or-replace-cursor tests
+  (test-case "insert-or-replace-cursor: on identifier"
+    ;; When cursor is on an identifier, it should be replaced
+    (define source "(define x 1)\nx")
+    (define syns (string->stxs "test" source))
+    (define pos (loc "test" 1 0))  ; On the 'x' at line 1
+    (define cursor (make-cursor pos))
+    (define with-cursor (insert-or-replace-cursor syns pos cursor))
+    ;; Should have 2 forms, second should be the cursor
+    (check-equal? (length with-cursor) 2)
+    (check-true (cursor-identifier? (second with-cursor))))
+
+  (test-case "insert-or-replace-cursor: after all forms"
+    ;; When cursor is after all forms, insert as new top-level form
+    (define source "(define x 1)\n(define y 2)")
+    (define syns (string->stxs "test" source))
+    (define pos (loc "test" 1 12))  ; After closing paren of second form
+    (define cursor (make-cursor pos))
+    (define with-cursor (insert-or-replace-cursor syns pos cursor))
+    ;; Should have 3 forms (2 defines + cursor)
+    (check-equal? (length with-cursor) 3)
+    (check-true (cursor-identifier? (third with-cursor))))
+
+  (test-case "insert-or-replace-cursor: between forms"
+    ;; When cursor is between forms, insert at that position
+    (define source "(define x 1)\n\n(define y 2)")
+    (define syns (string->stxs "test" source))
+    (define pos (loc "test" 1 0))  ; On the empty line
+    (define cursor (make-cursor pos))
+    (define with-cursor (insert-or-replace-cursor syns pos cursor))
+    ;; Should have 3 forms: first define, cursor, second define
+    (check-equal? (length with-cursor) 3)
+    (check-true (cursor-identifier? (second with-cursor))))
+
+  (test-case "insert-or-replace-cursor: at start before all forms"
+    ;; When cursor is before all forms, insert at the beginning
+    (define source "(define x 1)")
+    (define syns (string->stxs "test" source))
+    (define pos (loc "test" 0 0))  ; At opening paren
+    (define cursor (make-cursor pos))
+    (define with-cursor (insert-or-replace-cursor syns pos cursor))
+    ;; Should have 2 forms: cursor, then define
+    (check-equal? (length with-cursor) 2)
+    (check-true (cursor-identifier? (first with-cursor))))
+
+  (test-case "insert-or-replace-cursor: identifier inside a list"
+    ;; When cursor is on an identifier inside a list, replace it
+    (define source "(let ([x 1]) x)")
+    (define syns (string->stxs "test" source))
+    (define pos (loc "test" 0 13))  ; On the 'x' in the body
+    (define cursor (make-cursor pos))
+    (define with-cursor (insert-or-replace-cursor syns pos cursor))
+    ;; Should have the let with cursor replacing the x in the body
+    (check-match with-cursor
+                 (list (stx-quote (let ([x 1]) ,(? cursor-identifier?))))))
+
+  (test-case "insert-or-replace-cursor: insert inside a list"
+    ;; When cursor is inside a list but not on an identifier, insert it
+    (define source "(let () )")
+    (define syns (string->stxs "test" source))
+    (define pos (loc "test" 0 8))  ; Inside the empty body, before closing paren
+    (define cursor (make-cursor pos))
+    (define with-cursor (insert-or-replace-cursor syns pos cursor))
+    ;; Should have the let with cursor inserted in the body
+    (check-match with-cursor
+                 (list (stx-quote (let () ,(? cursor-identifier?))))))
 
   ;; The example from Fig. 17.
   (check-equal?
