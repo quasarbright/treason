@@ -4,7 +4,7 @@
 ;; Core property: parsing a string produces stx nodes whose spans
 ;; correspond to the correct substrings of the original source.
 
-(require "reader.rkt" "stx.rkt")
+(require "reader.rkt" "stx.rkt" "stx-quote.rkt")
 (require rackcheck rackunit)
 
 ;; ============================================================
@@ -192,4 +192,110 @@
   (test-case
    "malformed improper list: only dot"
    (check-exn exn:fail:parse?
-              (lambda () (string->stx 'test "(.)")))))
+              (lambda () (string->stx 'test "(.)"))))
+
+  ;; ============================================================
+  ;; EOF and delimiter error tests
+  ;; ============================================================
+
+  ;; Test that EOF in unclosed list raises parse error
+  (test-case
+   "unexpected end of input in list"
+   (check-exn exn:fail:parse?
+              (lambda () (string->stx 'test "(a b"))))
+
+  ;; Test that EOF in unclosed bracket list raises parse error
+  (test-case
+   "unexpected end of input in bracket list"
+   (check-exn exn:fail:parse?
+              (lambda () (string->stx 'test "[a b"))))
+
+  ;; Test that empty atom (unexpected delimiter) raises parse error
+  (test-case
+   "unexpected delimiter, expected atom"
+   (check-exn exn:fail:parse?
+              (lambda () (string->stx 'test "("))))
+
+  ;; ============================================================
+  ;; Hash form error tests
+  ;; ============================================================
+
+  ;; Test that EOF after # raises parse error
+  (test-case
+   "unexpected end of input after #"
+   (check-exn exn:fail:parse?
+              (lambda () (string->stx 'test "#"))))
+
+  ;; Test that unsupported # form raises parse error
+  (test-case
+   "unsupported # form"
+   (check-exn exn:fail:parse?
+              (lambda () (string->stx 'test "#x"))))
+
+  ;; ============================================================
+  ;; Quote error tests
+  ;; ============================================================
+
+  ;; Test that quote at EOF raises parse error
+  (test-case
+   "quote at end of input"
+   (check-exn exn:fail:parse?
+              (lambda () (string->stx 'test "'"))))
+
+  ;; ============================================================
+  ;; Bracket-specific delimiter tests
+  ;; ============================================================
+
+  ;; Test mismatched bracket with paren
+  (test-case
+   "mismatched bracket with open paren"
+   (check-exn exn:fail:parse?
+              (lambda () (string->stx 'test "[(]"))))
+
+  ;; Test mismatched bracket with close paren
+  (test-case
+   "mismatched bracket with close paren"
+   (check-exn exn:fail:parse?
+              (lambda () (string->stx 'test "[)]"))))
+
+  ;; Test mismatched paren with close bracket
+  (test-case
+   "mismatched paren with close bracket"
+   (check-exn exn:fail:parse?
+              (lambda () (string->stx 'test "(]"))))
+
+  ;; ============================================================
+  ;; Dotted list with multiple elements before dot
+  ;; ============================================================
+
+  ;; Test improper list with multiple elements: (a b . c)
+  (test-case
+   "improper list with multiple elements before dot"
+   (check-match (string->stx 'test "(a b . c)")
+                (stx-quote (a b . c))))
+
+  ;; Test that extra elements after dotted tail raise parse error
+  (test-case
+   "malformed improper list: extra elements after dotted tail"
+   (check-exn exn:fail:parse?
+              (lambda () (string->stx 'test "(a . b c)"))))
+
+  ;; ============================================================
+  ;; String->stxs (multiple top-level forms)
+  ;; ============================================================
+
+  ;; Test parsing multiple top-level forms
+  (test-case
+   "string->stxs with multiple forms"
+   (check-match (string->stxs 'test "(a b) c (d e)")
+                (list (stx-quote (a b)) (stx-quote c) (stx-quote (d e)))))
+
+  ;; Test string->stxs with empty input
+  (test-case
+   "string->stxs with empty input"
+   (check-equal? (string->stxs 'test "") '()))
+
+  ;; Test string->stxs with whitespace only
+  (test-case
+   "string->stxs with whitespace only"
+   (check-equal? (string->stxs 'test "  \n  ") '())))

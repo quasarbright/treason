@@ -292,11 +292,15 @@
 (define (parse-quote)
   (define start-line (line))
   (define start-col (col))
-  
+
   ;; Skip the quote character
   (advance!)
-  
+
   (define inner (parse))
+  (when (eof-object? inner)
+    (parse-error! "unexpected end of input after quote"
+                  (span (loc (source) start-line start-col)
+                        (loc (source) (line) (col)))))
   (define sp (span (loc (source) start-line start-col)
                    (loc (source) (line) (col))))
   (define quote-sym (stx 'quote
