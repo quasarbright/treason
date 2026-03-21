@@ -261,7 +261,7 @@
        [(keyword-binding? binding) (identifier-symbol id)]
        [(stx-error? binding) binding]
        [else (stx-error 'expand-expr "unexpected binding type" expr #f)])]
-    [(stx-quote (,head-stx . ,args))
+    [(stx-quote (,head-stx . ,_))
      #:when (identifier? head-stx)
      (define binding (scope-resolve scp head-stx))
      (cond
@@ -310,15 +310,9 @@
           (expand-expr marked-stx disjoined-scp))]
        ;; unbound in head position - pass through the stx-error from scope-resolve
        [(stx-error? binding)
-        (for ([arg args])
-          (when (identifier? arg)
-            (scope-resolve scp arg)))
         binding]
        ;; variable in head position - not callable
        [(var-binding? binding)
-        (for ([arg args])
-          (when (identifier? arg)
-            (scope-resolve scp arg)))
         (stx-error (identifier-symbol head-stx) "not a procedure or syntax" expr head-stx)]
        [else (stx-error #f "unexpected form" expr head-stx)])]
     ;; Non-identifier in head position

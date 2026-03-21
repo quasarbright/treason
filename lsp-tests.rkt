@@ -1041,15 +1041,6 @@
     (autocomplete source (find-position source "z" 1))
     (list (hasheq 'label "x") (hasheq 'label "y") (hasheq 'label "z"))))
 
-  ;; 7. Autocomplete at unbound macro call
-  (test-case
-   "error: autocomplete at unbound macro"
-   (define source "(let ([x 1]) (undefined-macro x))")
-   ;; At x in the unbound macro call, x should be in scope
-   (check-equal?
-    (autocomplete source (find-position source "x" 1))
-    (list (hasheq 'label "x"))))
-
   ;; 8. Goto-definition returns empty for unbound variable
   (test-case
    "error: goto-def empty for unbound"

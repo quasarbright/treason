@@ -6,7 +6,8 @@
 (provide (all-defined-out))
 (module+ main (main))
 (module+ test (require rackunit))
-(require json
+(require racket/exn
+         json
          "stx.rkt"
          "reader.rkt"
          "constants.rkt"
@@ -65,14 +66,14 @@ do we want actual types instead of json?
         [(request id method parameters)
          (define rsp
            (if (object-method-arity-includes? srv method 1)
-               (with-handlers ([exn:fail? (lambda (err) (log-server-error "~a" err) (response id 'null (hasheq 'code -32603 'message (format "internal error: ~a" err))))])
+               (with-handlers ([exn:fail? (lambda (err) (log-server-error "~a" err) (response id 'null (hasheq 'code -32603 'message (format "internal error: ~a" (exn->string err)))))])
                  (define data (dynamic-send srv method parameters))
                  (response id data 'null))
                (response id 'null (hasheq 'code -32601 'message (format "Unknown method: ~a" method)))))
          (write-message rsp out)]
         [(notification method parameters)
          (when (object-method-arity-includes? srv method 1)
-           (with-handlers ([exn:fail? (lambda (err) (log-server-error "~a" err))])
+           (with-handlers ([exn:fail? (lambda (err) (log-server-error "~a" (exn->string err)))])
              (dynamic-send srv method parameters)))])
       (loop))))
 
