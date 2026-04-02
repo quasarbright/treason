@@ -343,14 +343,17 @@ do we want actual types instead of json?
 ;; semantic-tokens : ExpanderResult -> (Listof Integer)
 ;; Returns LSP-encoded semantic token data (flat delta-encoded array, 5 integers per token).
 (define (semantic-tokens result)
+  (define token-map (collect-token-map result))
+  (define sorted (sort-tokens token-map))
+  (delta-encode-tokens sorted))
+
+;; collect-token-map : ExpanderResult -> (HashOf Span (list Symbol Natural))
+;; Walks all surface stx nodes and classifies each as a token type + modifiers.
+(define (collect-token-map result)
   (define state (expander-result-state result))
   (define resolutions-table (expander-state-resolutions state))
   (define bindings-table (expander-state-bindings state))
-
   (define token-map (make-hash))
-
-  ;; Walk all surface stx nodes; numbers get 'number, identifiers get their binding type.
-  ;; Binding sites are found via the bindings table; reference sites via resolutions.
   (visit-surface-stx!
    result
    (lambda (stx-node)
@@ -369,18 +372,22 @@ do we want actual types instead of json?
           (when tok-type
             (hash-set! token-map spn
                        (list tok-type (compute-token-modifiers state spn bnd))))]))))
+  token-map)
 
-  ;; Sort by (line, col)
-  (define sorted-tokens
-    (sort (hash->list token-map)
-          (lambda (a b)
-            (define sa (span-start (car a)))
-            (define sb (span-start (car b)))
-            (or (< (loc-line sa) (loc-line sb))
-                (and (= (loc-line sa) (loc-line sb))
-                     (< (loc-column sa) (loc-column sb)))))))
+;; sort-tokens : (HashOf Span (list Symbol Natural)) -> (Listof (cons Span (list Symbol Natural)))
+;; Sorts token map entries by source position (line, then column).
+(define (sort-tokens token-map)
+  (sort (hash->list token-map)
+        (lambda (a b)
+          (define sa (span-start (car a)))
+          (define sb (span-start (car b)))
+          (or (< (loc-line sa) (loc-line sb))
+              (and (= (loc-line sa) (loc-line sb))
+                   (< (loc-column sa) (loc-column sb)))))))
 
-  ;; Delta-encode into flat list
+;; delta-encode-tokens : (Listof (cons Span (list Symbol Natural))) -> (Listof Integer)
+;; Converts sorted tokens to the LSP flat delta-encoded integer array (5 integers per token).
+(define (delta-encode-tokens sorted-tokens)
   (apply append
     (let loop ([tokens sorted-tokens] [prev-line 0] [prev-char 0])
       (match tokens
