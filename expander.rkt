@@ -113,32 +113,14 @@
 ;; def-scp : Scope - definition-site scope (for macro-introduced identifiers)
 ;; use-scp : Scope - use-site scope (for pattern variable substitutions, no mark)
 
-;; with-stx-error-handling : catches raised stx-error? and returns it
-;; Use this instead of (with-handlers ([exn:fail? ...])) so unexpected errors are not silently swallowed.
-(define-syntax-rule (with-stx-error-handling body ...)
-  (with-handlers ([stx-error? (lambda (err) err)])
-    body ...))
-
-;; stx-error? -> void?
-(define (raise-and-record-stx-error err)
-  (record-stx-error! err)
-  (raise err))
-
-;; stx-error? -> void?
-(define (record-stx-error! err)
-  (when (current-expander-state)
-    (define errs (expander-state-stx-errors (current-expander-state)))
-    (set-add! errs err)))
-
 ;; ------------------------------------------------------------
 ;; LSP State
 ;; ------------------------------------------------------------
 
 ;; An ExpanderState is a (expander-state Hash Hash Hash Hash MutableSet)
-(struct expander-state [span->stx resolutions references bindings stx-errors] #:transparent)
-;; span->stx : [MutableHashOf Span Stx] - maps surface span to its Stx object
+(struct expander-state [resolutions references bindings stx-errors] #:transparent)
 ;; resolutions : [MutableHashOf Span [Listof Resolution]] - maps ref span to resolutions
-;; references : [MutableHashOf Span [Listof Span]] - maps def span to ref spans
+;; references : [MutableHashOf Span [Listof Stx]] - maps binding site span to ref stx nodes
 ;; bindings : [MutableHashOf Span Binding] - maps binding site span to its Binding
 ;; stx-errors : [MutableSetOf stx-error?]
 
@@ -225,7 +207,6 @@
   (define state (make-expander-state))
   (parameterize ([current-expander-state state]
                  [gensym-ctr 0])
-    (for ([s surface-stxs]) (record-all-stx! s))
     (define expanded (expand-toplevel surface-stxs initial-scope))
     (define errors (for/list ([err (expander-state-stx-errors state)]) err))
     (expander-result surface-stxs expanded errors state)))
@@ -742,23 +723,32 @@
 ;; LSP Recording Functions
 ;; ============================================================
 
+;; with-stx-error-handling : catches raised stx-error? and returns it
+;; Use this instead of (with-handlers ([exn:fail? ...])) so unexpected errors are not silently swallowed.
+(define-syntax-rule (with-stx-error-handling body ...)
+  (with-handlers ([stx-error? (lambda (err) err)])
+    body ...))
+
+;; stx-error? -> void?
+(define (raise-and-record-stx-error err)
+  (record-stx-error! err)
+  (raise err))
+
+;; stx-error? -> void?
+(define (record-stx-error! err)
+  (when (current-expander-state)
+    (define errs (expander-state-stx-errors (current-expander-state)))
+    (set-add! errs err)))
+
 ;; make-expander-state : -> ExpanderState
 ;; Creates a fresh expander state with empty tables.
 (define (make-expander-state)
-  (expander-state (make-hash) (make-hash) (make-hash) (make-hash) (mutable-set)))
+  (expander-state (make-hash) (make-hash) (make-hash) (mutable-set)))
 
 ;; hash-cons! : MutableHash Key Value -> Void
 ;; Appends a value to the list stored at key (multi-valued hash).
 (define (hash-cons! ht key val)
   (hash-set! ht key (cons val (hash-ref ht key '()))))
-
-;; record-stx! : Stx -> Void
-;; Records a surface syntax node in the span->stx table.
-(define (record-stx! stx)
-  (define spn (stx-span stx))
-  (define state (current-expander-state))
-  (when (and spn state)
-    (hash-set! (expander-state-span->stx state) spn stx)))
 
 ;; record-resolution! : Stx Binding-or-#f Scope -> Void
 ;; Records a resolution in the tables.
@@ -777,7 +767,7 @@
     (define site (and binding (not (stx-error? binding)) (binding-site binding)))
     (define def-spn (and site (stx-span site)))
     (when def-spn
-      (hash-cons! (expander-state-references state) def-spn ref-spn))))
+      (hash-cons! (expander-state-references state) def-spn ref-stx))))
 
 ;; binding-site : Binding -> (or/c Identifier #f)
 ;; Extract the binding site identifier from a binding.
@@ -799,18 +789,6 @@
     (define references (expander-state-references state))
     (unless (hash-has-key? references spn)
       (hash-set! references spn '()))))
-
-;; record-all-stx! : Syntax -> Void
-;; Records all surface syntax nodes in the span->stx table.
-(define (record-all-stx! root-stx)
-  (let loop ([syn root-stx])
-    (match syn
-      [(stx e spn _marks)
-       (when spn (record-stx! syn))
-       (cond
-         [(list? e) (for-each loop e)]
-         [(pair? e) (loop (car e)) (loop (cdr e))])]
-      [_ (void)])))
 
 ;; ============================================================
 ;; Query Functions
@@ -843,15 +821,13 @@
   (define spn (stx-span stx-node))
   (define state (expander-result-state result))
   (define references (expander-state-references state))
-  (define span->stx (expander-state-span->stx state))
   (if spn
       ;; First check if this is a binding site (has entry in bindings table)
       (let ([is-binding-site? (hash-has-key? (expander-state-bindings state) spn)])
         (if is-binding-site?
             ;; It's a binding site - return all references to it (deduplicated)
             (remove-duplicates
-             (for/list ([ref-spn (hash-ref references spn '())])
-               (hash-ref span->stx ref-spn))
+             (hash-ref references spn '())
              #:key stx-span)
             ;; It's a reference site - find binding sites, then their references
             (let* ([bsites (get-binding-sites-of result stx-node)]
@@ -859,8 +835,7 @@
               (remove-duplicates
                (append-map
                 (lambda (def-spn)
-                  (for/list ([ref-spn (hash-ref references def-spn '())])
-                    (hash-ref span->stx ref-spn)))
+                  (hash-ref references def-spn '()))
                 binding-spns)
                #:key stx-span))))
       '()))
@@ -907,18 +882,27 @@
              (scope->names (resolution-scp res)
                            (identifier-marks (resolution-ref-stx res)))))))
 
+;; visit-surface-stx! : ExpanderResult (Stx -> Void) -> Void
+;; Calls f on every node in the surface syntax trees of result.
+(define (visit-surface-stx! result f)
+  (let loop ([stx-node (expander-result-surface result)])
+    (cond
+      [(list? stx-node) (for ([s stx-node]) (loop s))]
+      [(stx? stx-node)
+       (f stx-node)
+       (define e (stx-e stx-node))
+       (cond
+         [(list? e) (for ([s e]) (loop s))]
+         [(pair? e) (loop (car e)) (loop (cdr e))])])))
+
 ;; get-all-surface-binding-sites : ExpanderResult -> (Listof Stx)
 ;; Returns all surface binding sites in the program.
-;; A binding site is a surface node that has entries in the references table.
+;; A binding site is a surface node that has an entry in the bindings table.
 (define (get-all-surface-binding-sites result)
   (define state (expander-result-state result))
-  (define references (expander-state-references state))
-  (define span->stx (expander-state-span->stx state))
-  (for/list ([def-spn (in-hash-keys references)])
-    (hash-ref span->stx def-spn)))
-
-;; ============================================================
-;; Position-Based Query Functions
+  (for/list ([(_spn bnd) (in-hash (expander-state-bindings state))]
+             #:when (binding-site bnd))
+    (binding-site bnd)))
 ;; ============================================================
 
 ;; find-node-at-position : ExpanderResult Loc -> (or/c Stx #f)

@@ -344,28 +344,31 @@ do we want actual types instead of json?
 ;; Returns LSP-encoded semantic token data (flat delta-encoded array, 5 integers per token).
 (define (semantic-tokens result)
   (define state (expander-result-state result))
-  (define span->stx-table (expander-state-span->stx state))
   (define resolutions-table (expander-state-resolutions state))
   (define bindings-table (expander-state-bindings state))
 
   (define token-map (make-hash))
 
-  ;; For each surface node: numbers get 'number, identifiers get their binding type.
+  ;; Walk all surface stx nodes; numbers get 'number, identifiers get their binding type.
   ;; Binding sites are found via the bindings table; reference sites via resolutions.
-  (for ([(spn stx-node) (in-hash span->stx-table)])
-    (cond
-      [(number? (stx-e stx-node))
-       (hash-set! token-map spn (list 'number 0))]
-      [(identifier? stx-node)
-       (define bnd
-         (or (hash-ref bindings-table spn #f)
-             (for/first ([res (in-list (hash-ref resolutions-table spn '()))]
-                         #:when (resolution-binding res))
-               (resolution-binding res))))
-       (define tok-type (classify-binding bnd))
-       (when tok-type
-         (hash-set! token-map spn
-                    (list tok-type (compute-token-modifiers state spn bnd))))]))
+  (visit-surface-stx!
+   result
+   (lambda (stx-node)
+     (define spn (stx-span stx-node))
+     (when spn
+       (cond
+         [(number? (stx-e stx-node))
+          (hash-set! token-map spn (list 'number 0))]
+         [(identifier? stx-node)
+          (define bnd
+            (or (hash-ref bindings-table spn #f)
+                (for/first ([res (in-list (hash-ref resolutions-table spn '()))]
+                            #:when (resolution-binding res))
+                  (resolution-binding res))))
+          (define tok-type (classify-binding bnd))
+          (when tok-type
+            (hash-set! token-map spn
+                       (list tok-type (compute-token-modifiers state spn bnd))))]))))
 
   ;; Sort by (line, col)
   (define sorted-tokens
