@@ -259,9 +259,7 @@
              (eq? 'let (keyword-binding-name binding)))
         (with-stx-error-handling
           (match expr
-            [(stx-quote (let ([,x-stx ,e-stx]) ,body))
-             (unless (identifier? x-stx)
-               (raise-and-record-stx-error (stx-error 'let "bad syntax" expr x-stx)))
+            [(stx-quote (let ([,(and x-stx (? identifier?)) ,e-stx]) ,body))
              (define e^ (expand-expr e-stx scp))
              (define scp^ (new-scope scp))
              (define x-name (gensym (identifier-symbol x-stx)))
@@ -269,6 +267,20 @@
              (scope-bind! scp^ x-stx x-binding)
              (define b^ (expand-expr body scp^))
              `(let ([,x-name ,e^]) ,b^)]
+            ;; optimistic sub-expression expansion
+            [(stx-quote (let ,bg ,body))
+             (define bg^
+               (match bg
+                 [(stx-quote ([,bad ,e]))
+                  (define err (stx-error 'let "bad syntax" expr bad))
+                  (record-stx-error! err)
+                  `([,err ,(expand-expr e scp)])]
+                 [_ 
+                  (define err (stx-error 'let "bad syntax" expr bg))
+                  (record-stx-error! err)
+                  err]))
+             (define body^ (expand-expr body scp))
+             `(let ,bg^ ,body^)]
             [_ (raise-and-record-stx-error (stx-error 'let "bad syntax" expr #f))]))]
        ;; let-syntax
        [(and (keyword-binding? binding)
@@ -283,6 +295,11 @@
              (scope-bind! scp^ mname-stx m-binding)
              (record-all-pvar-resolutions-for-macrot! macrot-stx scp)
              (expand-expr body scp^)]
+            ;; optimistic sub-expression expansion
+            [(stx-quote (let-syntax ,bg ,body))
+             ;; stx error actually doesn't show up in expanded output
+             (record-stx-error! (stx-error 'let-syntax "bad syntax" expr bg))
+             (expand-expr body scp)]
             [_ (raise-and-record-stx-error (stx-error 'let-syntax "bad syntax" expr #f))]))]
        ;; macro application
        [(macro-binding? binding)
@@ -1264,7 +1281,7 @@
   
   ;; datum literals
   (check-equal?
-   (expand 
+   (expand
     '(block (define-syntax lit (syntax-rules (x y) [(lit x) 1] [(lit y) 2] [(lit z) 3]))
             (#%expression (lit x))
             (#%expression (lit y))
@@ -1272,4 +1289,18 @@
    '(block (begin)
            (#%expression 1)
            (#%expression 2)
-           (#%expression 3))))
+           (#%expression 3)))
+  ;; optimistic sub-expression expansion
+  (check-match
+   (expand
+    '(let ([]) (let ([x 1]) x)))
+   `(let ,(? stx-error?) (let ([x0 1]) x0)))
+  (check-match
+   (expand
+    '(let ([42 (let ([x 1]) x)]) (let ([x 1]) x)))
+   `(let ([,(? stx-error?) (let ([x0 1]) x0)]) (let ([x1 1]) x1)))
+  (check-match
+   (expand
+    '(let-syntax () (let ([x 1]) x)))
+   '(let ([x0 1]) x0))
+  )

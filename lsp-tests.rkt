@@ -1305,6 +1305,19 @@
    (check-equal?
     (goto-definition source (find-position source "x" 1))
     (list (hash 'uri test-uri 'range (find-range source "x" 0)))))
+
+  (test-case
+   "optimistic sub-expression expansion: let"
+   (define source "(let ([]) (let ([x 1]) x))")
+   (check-equal?
+    (goto-definition source (find-position source "x" 1))
+    (list (hash 'uri test-uri 'range (find-range source "x" 0)))))
+  (test-case
+   "optimistic sub-expression expansion: let-syntax"
+   (define source "(let-syntax ([]) (let ([q 1]) q))")
+   (check-equal?
+    (goto-definition source (find-position source "q" 1))
+    (list (hash 'uri test-uri 'range (find-range source "q" 0)))))
   )
 
 ;; ============================================================
