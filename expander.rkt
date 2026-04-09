@@ -23,11 +23,18 @@
 ;;      | (#%expression expr)
 ;;      | (mname ustx ...)
 ;;
-;; macrot := (syntax-rules (id ...) [(_ pvar ...) tmpl] ...)
+;; macrot := (syntax-rules (id ...) [(_ pat ...) tmpl] ...)
 ;;
 ;; ustx := var | expr
 ;;
+;; pat := (pat . pat)
+;;      | ()
+;;      | number
+;;      | id
+;;      | (~var x expr) ;; annotated variable. this is a divergence from syntax-rules
+;;
 ;; tmpl := (tmpl . tmpl)
+;;       | ()
 ;;       | number
 ;;       | id
 ;;       | id that is pvar
@@ -429,7 +436,7 @@
   (define binding (scope-resolve use-scp mname))
   (match-define (macro-binding _ macrot def-scp) binding)
   (define-values (penv tmpl)
-    (select-syntax-rule who macrot expr))
+    (select-syntax-rule who macrot expr use-scp))
   (define def-mark (fresh-def-mark))
   (define expanded-tmpl (expand-template tmpl penv def-mark))
   (define introduced-defn-scp (new-scope def-scp))
@@ -485,6 +492,11 @@
       [(? identifier? id)
        (unless (or (is-literal? id) (eq? (identifier-symbol id) '_))
          (scope-bind! scp id (pattern-variable-binding id)))]
+      [(stx-quote (~var ,(? identifier? id) ,(? identifier? (app identifier-symbol 'expr))))
+       (unless (or (is-literal? id) (eq? (identifier-symbol id) '_))
+         (scope-bind! scp id (pattern-variable-binding id)))]
+      [(stx-quote (~var . ,_))
+       (raise-and-record-stx-error (stx-error '~var "bad syntax" pat p))]
       [(stx-quote (,a . ,d))
        (loop a)
        (loop d)]
@@ -526,12 +538,68 @@
 ;; select-syntax-rule : Symbol Syntax Syntax Scope Scope -> (values PatternEnv Syntax)
 ;; Selects the first matching clause from a syntax-rules transformer.
 ;; Returns the pattern environment and the template to instantiate.
-(define (select-syntax-rule who macrot expr)
+(define (select-syntax-rule who macrot expr scp)
   ;; macrot is (syntax-rules (literal ...) clause ...)
   (match macrot
+    ;; special case for single clause: optimistic subexpression expansion
+    [(stx-quote (,_syntax-rules (,literal-ids ...) [,pat ,template]))
+     (define is-datum-literal? (make-is-datum-literal? literal-ids))
+     (define penv (match-top-pattern/optimistic pat expr is-datum-literal? scp))
+     (unless penv
+       (raise-and-record-stx-error (stx-error who "no pattern matched" expr #f)))
+     (values penv template)]
     [(stx-quote (,_syntax-rules (,literal-ids ...) ,clauses ...))
      (define is-datum-literal? (make-is-datum-literal? literal-ids))
      (try-clauses who clauses expr is-datum-literal?)]))
+
+;; Symbol Pattern Syntax (Id -> Bool) Scope -> (or PatternEnv #f)
+;; Matches a top-level pattern against syntax.
+;; The car of both pattern and syntax is the macro name (ignored per syntax-rules semantics).
+;; Returns a PatternEnv on success, #f on failure.
+(define (match-top-pattern/optimistic pat expr is-datum-literal? scp)
+  (match* (pat expr)
+    [((stx-quote (,_ . ,pd)) (stx-quote (,_ . ,ed)))
+     (match-pattern/optimistic pd ed is-datum-literal? scp)]
+    [(_ _) #f]))
+
+;; Pattern Syntax (Id -> Bool) Scope -> (or PatternEnv #f)
+;; Matches a pattern against syntax.
+;; Returns a PatternEnv mapping pattern variables to matched syntax on success,
+;; or #f if the pattern doesn't match.
+;; Special behavior: We still try to match after a failure for optimistic subexpression
+;; expansion.
+(define (match-pattern/optimistic pat expr is-datum-literal? scp)
+  (match* (pat expr)
+    [((? identifier? lit) (? identifier? target-id))
+     #:when (is-datum-literal? lit)
+     (and (equal? (stx->datum lit) (stx->datum target-id))
+          (hash))]
+    [((? identifier? pvar) syn)
+     #:when (not (is-datum-literal? pvar))
+     (hash (identifier->key pvar) syn)]
+    [((stx-quote (~var ,(? identifier? pvar) ,(? identifier? (app identifier-symbol 'expr)))) syn)
+     ;; expand the syntax just for IDE services.
+     ;; this will lead to multiple expansions of subexpressions,
+     ;; but this is avoidable with a more sophisticated implementation.
+     ;; either way, this should not cause problems with IDE services
+     (expand-expr syn scp)
+     (hash (identifier->key pvar) syn)]
+    ;; no need to check for bad usage of ~var, it has already been checked in record-all-pvar-resolutions-for-macrot!
+    [((stx-quote (,pa . ,pd)) (stx-quote (,ea . ,ed)))
+     (=> fail)
+     (define penv-a (match-pattern/optimistic pa ea is-datum-literal? scp))
+     (define penv-d (match-pattern/optimistic pd ed is-datum-literal? scp))
+     ;; we are deliberately expanding pd even if pa fails, in case there is a
+     ;; ~var in pa that we need to optimistically expand
+     (unless (and penv-a penv-d) (fail))
+     (hash-union penv-a penv-d
+                 #:combine (lambda (ea ed)
+                             (if (syntax-same-for-binding? ea ed)
+                                 ea
+                                 (fail))))]
+    [(_ _)
+    (and (equal? (stx->datum pat) (stx->datum expr))
+         (hash))]))
 
 ;; try-clauses : Symbol [Listof Clause] Syntax (Id -> Bool) -> (values PatternEnv Syntax)
 ;; Tries each clause in order until one matches.
@@ -556,18 +624,6 @@
     [((stx-quote (,_ . ,pd)) (stx-quote (,_ . ,ed)))
      (match-pattern pd ed is-datum-literal?)]
     [(_ _) #f]))
-
-;; match-pattern-list : [Listof Pattern] [Listof Syntax] (Identifier -> Boolean) -> (or PatternEnv #f)
-;; Matches a list of patterns against a list of syntax elements.
-(define (match-pattern-list pats exprs is-datum-literal?)
-  (cond
-    [(and (null? pats) (null? exprs)) (hash)]
-    [(or (null? pats) (null? exprs)) #f]
-    [else
-     (define resa (match-pattern (car pats) (car exprs) is-datum-literal?))
-     (and resa
-          (let ([resd (match-pattern-list (cdr pats) (cdr exprs) is-datum-literal?)])
-            (and resd (hash-union resa resd))))]))
 
 ;; match-pattern : Pattern Syntax (Id -> Bool) -> (or PatternEnv #f)
 ;; Matches a pattern against syntax.
@@ -1299,8 +1355,12 @@
    (expand
     '(let ([42 (let ([x 1]) x)]) (let ([x 1]) x)))
    `(let ([,(? stx-error?) (let ([x0 1]) x0)]) (let ([x1 1]) x1)))
-  (check-match
+  (check-equal?
    (expand
     '(let-syntax () (let ([x 1]) x)))
    '(let ([x0 1]) x0))
+   (check-equal?
+    (expand
+     '(let-syntax ([m (syntax-rules () [(m (~var x expr)) x])]) (m 1)))
+    '1)
   )

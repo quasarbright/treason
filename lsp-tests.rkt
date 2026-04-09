@@ -1318,6 +1318,14 @@
    (check-equal?
     (goto-definition source (find-position source "q" 1))
     (list (hash 'uri test-uri 'range (find-range source "q" 0)))))
+  (test-case
+   "optimistic sub-expression expansion: custom via ~var"
+   (define source
+     "(let-syntax ([my-let (syntax-rules () [(_ ([x (~var e expr)]) (~var b expr)) (let ([x e]) b)])])
+        (my-let (b) (let ([q 1]) q)))")
+   (check-equal?
+    (goto-definition source (find-position source "q" 1))
+    (list (hash 'uri test-uri 'range (find-range source "q" 0)))))
   )
 
 ;; ============================================================

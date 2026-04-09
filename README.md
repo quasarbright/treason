@@ -42,6 +42,7 @@ macrot := (syntax-rules (literal ...) [pattern template] ...)
 ; patterns (no ellipsis support yet)
 pattern := _
          | pvar
+         | (~var pvar expr)  ; causes optimistic subexpression expansion
          | literal
          | (pattern ...)
 
