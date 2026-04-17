@@ -710,10 +710,10 @@
   (define key (identifier->key id))
   (match scp
     [(core-scope _)
-     (error 'scope-bind "cannot bind in core scope")]
+     (raise-and-record-stx-error (stx-error #f "cannot bind in core scope" id #f))]
     [(scope parent bindings)
      (when (hash-has-key? bindings key)
-       (error 'scope-bind! "name already bound: ~a" id))
+       (raise-and-record-stx-error (stx-error #f (format "name already bound: ~a" (identifier-symbol id)) id #f)))
      (hash-set! bindings key bnd)
      (record-binding-site! id bnd)]
     [(disjoin def-mark def-scp use-scp)
