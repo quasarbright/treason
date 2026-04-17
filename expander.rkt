@@ -544,62 +544,67 @@
     ;; special case for single clause: optimistic subexpression expansion
     [(stx-quote (,_syntax-rules (,literal-ids ...) [,pat ,template]))
      (define is-datum-literal? (make-is-datum-literal? literal-ids))
-     (define penv (match-top-pattern/optimistic pat expr is-datum-literal? scp))
+     (define-values (penv ose) (match-top-pattern/optimistic pat expr is-datum-literal? scp))
      (unless penv
+       (for ([pair ose])
+         (expand-expr (car pair) (cdr pair)))
        (raise-and-record-stx-error (stx-error who "no pattern matched" expr #f)))
      (values penv template)]
     [(stx-quote (,_syntax-rules (,literal-ids ...) ,clauses ...))
      (define is-datum-literal? (make-is-datum-literal? literal-ids))
      (try-clauses who clauses expr is-datum-literal?)]))
 
-;; Symbol Pattern Syntax (Id -> Bool) Scope -> (or PatternEnv #f)
+;; Symbol Pattern Syntax (Id -> Bool) Scope -> (values (or PatternEnv #f) (Listof (Cons Stx Scope)))
 ;; Matches a top-level pattern against syntax.
 ;; The car of both pattern and syntax is the macro name (ignored per syntax-rules semantics).
-;; Returns a PatternEnv on success, #f on failure.
+;; Returns a PatternEnv on success, #f on failure, and OSE pairs to expand on failure.
 (define (match-top-pattern/optimistic pat expr is-datum-literal? scp)
   (match* (pat expr)
     [((stx-quote (,_ . ,pd)) (stx-quote (,_ . ,ed)))
      (match-pattern/optimistic pd ed is-datum-literal? scp)]
-    [(_ _) #f]))
+    [(_ _) (values #f (list))]))
 
-;; Pattern Syntax (Id -> Bool) Scope -> (or PatternEnv #f)
+;; Pattern Syntax (Id -> Bool) Scope -> (values (or PatternEnv #f) (Listof (Cons Stx Scope)))
 ;; Matches a pattern against syntax.
 ;; Returns a PatternEnv mapping pattern variables to matched syntax on success,
-;; or #f if the pattern doesn't match.
+;; or #f if the pattern doesn't match,
+;; and a list of OSE pairs to expand on failure.
 ;; Special behavior: We still try to match after a failure for optimistic subexpression
 ;; expansion.
 (define (match-pattern/optimistic pat expr is-datum-literal? scp)
   (match* (pat expr)
     [((? identifier? lit) (? identifier? target-id))
      #:when (is-datum-literal? lit)
-     (and (equal? (stx->datum lit) (stx->datum target-id))
-          (hash))]
+     (values
+       (and (equal? (stx->datum lit) (stx->datum target-id))
+            (hash))
+       (list))]
     [((? identifier? pvar) syn)
      #:when (not (is-datum-literal? pvar))
-     (hash (identifier->key pvar) syn)]
+     (values (hash (identifier->key pvar) syn)
+             (list))]
     [((stx-quote (~var ,(? identifier? pvar) ,(? identifier? (app identifier-symbol 'expr)))) syn)
-     ;; expand the syntax just for IDE services.
-     ;; this will lead to multiple expansions of subexpressions,
-     ;; but this is avoidable with a more sophisticated implementation.
-     ;; either way, this should not cause problems with IDE services
-     (expand-expr syn scp)
-     (hash (identifier->key pvar) syn)]
+     (values (hash (identifier->key pvar) syn)
+             (list (cons syn scp)))]
     ;; no need to check for bad usage of ~var, it has already been checked in record-all-pvar-resolutions-for-macrot!
     [((stx-quote (,pa . ,pd)) (stx-quote (,ea . ,ed)))
-     (=> fail)
-     (define penv-a (match-pattern/optimistic pa ea is-datum-literal? scp))
-     (define penv-d (match-pattern/optimistic pd ed is-datum-literal? scp))
-     ;; we are deliberately expanding pd even if pa fails, in case there is a
-     ;; ~var in pa that we need to optimistically expand
-     (unless (and penv-a penv-d) (fail))
-     (hash-union penv-a penv-d
-                 #:combine (lambda (ea ed)
-                             (if (syntax-same-for-binding? ea ed)
-                                 ea
-                                 (fail))))]
+     (let/cc abort
+       (define-values (penv-a ose-a) (match-pattern/optimistic pa ea is-datum-literal? scp))
+       (define-values (penv-d ose-d) (match-pattern/optimistic pd ed is-datum-literal? scp))
+       (define (fail) (abort #f (append ose-a ose-d)))
+       ;; we are deliberately expanding pd even if pa fails, in case there is a
+       ;; ~var in pa that we need to optimistically expand
+       (unless (and penv-a penv-d) (fail))
+       (values (hash-union penv-a penv-d
+                           #:combine (lambda (ea ed)
+                                       (if (syntax-same-for-binding? ea ed)
+                                           ea
+                                           (fail))))
+               (append ose-a ose-d)))]
     [(_ _)
-    (and (equal? (stx->datum pat) (stx->datum expr))
-         (hash))]))
+    (values (and (equal? (stx->datum pat) (stx->datum expr))
+                 (hash))
+            (list))]))
 
 ;; try-clauses : Symbol [Listof Clause] Syntax (Id -> Bool) -> (values PatternEnv Syntax)
 ;; Tries each clause in order until one matches.
@@ -1363,4 +1368,14 @@
     (expand
      '(let-syntax ([m (syntax-rules () [(m (~var x expr)) x])]) (m 1)))
     '1)
+  (test-case
+   "OSE doesn't happen when there is not a failure"
+   (define sexp
+     '(block
+       (define-syntax my-let
+         (syntax-rules ()
+           [(my-let ([x (~var e expr)]) (~var b expr)) (let ([x e]) b)]))
+       (my-let ([x 1]) x)))
+   (define result (analyze! (list (sexpr->syntax sexp))))
+   (check-equal? (expander-result-errors result) (list)))
   )
