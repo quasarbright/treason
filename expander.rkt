@@ -310,6 +310,8 @@
             [_ (raise-and-record-stx-error (stx-error 'let-syntax "bad syntax" expr #f))]))]
        ;; macro application
        [(macro-binding? binding)
+        ;; NOTE: expand-macro may perform optimistic subexpression expansion as a side effect before
+        ;; raising a stx-error
         (with-stx-error-handling
           (define-values (marked-stx disjoined-scp) (expand-macro head-stx expr scp))
           (expand-expr marked-stx disjoined-scp))]
@@ -544,34 +546,34 @@
     ;; special case for single clause: optimistic subexpression expansion
     [(stx-quote (,_syntax-rules (,literal-ids ...) [,pat ,template]))
      (define is-datum-literal? (make-is-datum-literal? literal-ids))
-     (define-values (penv ose) (match-top-pattern/optimistic pat expr is-datum-literal? scp))
+     (define-values (penv ose) (match-top-pattern/optimistic pat expr is-datum-literal?))
      (unless penv
-       (for ([pair ose])
-         (expand-expr (car pair) (cdr pair)))
+       (for ([expr ose])
+         (expand-expr expr scp))
        (raise-and-record-stx-error (stx-error who "no pattern matched" expr #f)))
      (values penv template)]
     [(stx-quote (,_syntax-rules (,literal-ids ...) ,clauses ...))
      (define is-datum-literal? (make-is-datum-literal? literal-ids))
      (try-clauses who clauses expr is-datum-literal?)]))
 
-;; Symbol Pattern Syntax (Id -> Bool) Scope -> (values (or PatternEnv #f) (Listof (Cons Stx Scope)))
+;; Symbol Pattern Syntax (Id -> Bool) Scope -> (values (or PatternEnv #f) (Listof Stx))
 ;; Matches a top-level pattern against syntax.
 ;; The car of both pattern and syntax is the macro name (ignored per syntax-rules semantics).
-;; Returns a PatternEnv on success, #f on failure, and OSE pairs to expand on failure.
-(define (match-top-pattern/optimistic pat expr is-datum-literal? scp)
+;; Returns a PatternEnv on success, #f on failure, and OSE expressions to expand on failure.
+(define (match-top-pattern/optimistic pat expr is-datum-literal?)
   (match* (pat expr)
     [((stx-quote (,_ . ,pd)) (stx-quote (,_ . ,ed)))
-     (match-pattern/optimistic pd ed is-datum-literal? scp)]
+     (match-pattern/optimistic pd ed is-datum-literal?)]
     [(_ _) (values #f (list))]))
 
-;; Pattern Syntax (Id -> Bool) Scope -> (values (or PatternEnv #f) (Listof (Cons Stx Scope)))
+;; Pattern Syntax (Id -> Bool) Scope -> (values (or PatternEnv #f) (Listof Stx))
 ;; Matches a pattern against syntax.
 ;; Returns a PatternEnv mapping pattern variables to matched syntax on success,
 ;; or #f if the pattern doesn't match,
-;; and a list of OSE pairs to expand on failure.
+;; and a list of OSE expressions to expand on failure.
 ;; Special behavior: We still try to match after a failure for optimistic subexpression
 ;; expansion.
-(define (match-pattern/optimistic pat expr is-datum-literal? scp)
+(define (match-pattern/optimistic pat expr is-datum-literal?)
   (match* (pat expr)
     [((? identifier? lit) (? identifier? target-id))
      #:when (is-datum-literal? lit)
@@ -585,12 +587,12 @@
              (list))]
     [((stx-quote (~var ,(? identifier? pvar) ,(? identifier? (app identifier-symbol 'expr)))) syn)
      (values (hash (identifier->key pvar) syn)
-             (list (cons syn scp)))]
+             (list syn))]
     ;; no need to check for bad usage of ~var, it has already been checked in record-all-pvar-resolutions-for-macrot!
     [((stx-quote (,pa . ,pd)) (stx-quote (,ea . ,ed)))
      (let/cc abort
-       (define-values (penv-a ose-a) (match-pattern/optimistic pa ea is-datum-literal? scp))
-       (define-values (penv-d ose-d) (match-pattern/optimistic pd ed is-datum-literal? scp))
+       (define-values (penv-a ose-a) (match-pattern/optimistic pa ea is-datum-literal?))
+       (define-values (penv-d ose-d) (match-pattern/optimistic pd ed is-datum-literal?))
        (define (fail) (abort #f (append ose-a ose-d)))
        ;; we are deliberately expanding pd even if pa fails, in case there is a
        ;; ~var in pa that we need to optimistically expand
