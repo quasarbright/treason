@@ -1,5 +1,5 @@
 #lang racket
-(require (only-in racket/base [gensym racket-gensym]))
+(require (only-in racket/base [gensym racket-gensym]) racket/set)
 
 ;; LSP-enabled macro expander
 ;;
@@ -601,9 +601,15 @@
                            (match-result-progress (car b))))))
      (when (pair? sorted)
        (define best-progress (match-result-progress (car (last sorted))))
-       (for* ([r+t sorted]
-              #:when (equal? (match-result-progress (car r+t)) best-progress)
-              [e (match-result-ose-stxs (car r+t))])
+       (define r+t-with-best-progress
+         (for/list ([r+t sorted]
+                    #:when (equal? (match-result-progress (car r+t)) best-progress))
+           r+t))
+       (define oses
+         (apply set-intersect
+                (for/list ([r+t r+t-with-best-progress])
+                  (match-result-ose-stxs (car r+t)))))
+       (for ([e oses])
          (expand-expr e scp)))
      (raise-and-record-stx-error (stx-error who "no pattern matched" expr #f))]))
 

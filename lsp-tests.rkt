@@ -1338,6 +1338,16 @@
    (check-equal?
     (goto-definition source (find-position source "q" 1))
     (list (hash 'uri test-uri 'range (find-range source "q" 0)))))
+  (test-case
+   "optimistic sub-expression expansion: only expand intersection of progress-tied clauses' subexpressions"
+   (define source
+     "(let-syntax ([m (syntax-rules ()
+                        [(_ 1 (~var e expr)) e]
+                        [(_ 2 2 (~var e expr)) e])])
+        (m 3 (let ([q 1]) q)))")
+   (check-equal?
+    (goto-definition source (find-position source "q" 1))
+    (list)))
 
   (test-case
    "optimistic sub-expression expansion: ~var before failing literal"
@@ -1773,7 +1783,7 @@
       (define end-col (cdr match))
       (define sym (substring line start-col end-col))
       ;; Skip keywords
-      (unless (member sym '("let" "if" "define" "block" "begin" "let-syntax" "define-syntax" 
+      (unless (member sym '("let" "if" "define" "block" "begin" "let-syntax" "define-syntax"
                             "syntax-rules" "else" "#%expression"))
         (set! results (cons (cons sym (hash 'line line-num 'character start-col)) results)))))
   (reverse results))
@@ -1810,21 +1820,21 @@
   ;; 2. If goto-definition(pos) returns binding B, then find-references(B)
   ;;    should include pos.
   ;; 3. Every binding site should be included in its own find-references result.
-  
+
   (test-case
    "consistency: find-references completeness check"
    (for ([sample sample-programs])
      (define name (car sample))
      (define source (cdr sample))
      (define id-positions (find-all-identifier-positions source))
-     
+
      (for ([id-pos id-positions])
        (define sym (car id-pos))
        (define pos (cdr id-pos))
-       
+
        ;; Call find-references on this identifier
        (define refs (find-references source pos))
-       
+
        ;; Skip if no references found (unbound variable)
        (unless (null? refs)
          ;; Property 1: All references in the set should return the same set
@@ -1833,20 +1843,20 @@
            (define ref-range (hash-ref ref 'range))
            (define ref-start (hash-ref ref-range 'start))
            (define ref-refs (find-references source ref-start))
-           
+
            ;; The reference sets should be equivalent (same elements, possibly different order)
            (check-equal?
             (length refs)
             (length ref-refs)
             (format "Find-refs consistency failed for ~a in ~a: find-refs(~a) has ~a refs, but find-refs(~a) has ~a refs"
                     sym name pos (length refs) ref-start (length ref-refs)))
-           
+
            (for ([r refs])
              (check-true
               (location-member? r ref-refs)
               (format "Find-refs consistency failed for ~a in ~a: ~a in find-refs(~a) but not in find-refs(~a)"
                       sym name r pos ref-start))))
-         
+
          ;; Property 2: If goto-definition returns a binding, find-references on that
          ;; binding should include the original position.
          ;; Skip when the position is itself a binding site (goto-def returns itself),
@@ -1855,15 +1865,15 @@
          (for ([binding-site binding-sites])
            (define binding-range (hash-ref binding-site 'range))
            (define binding-start (hash-ref binding-range 'start))
-           
+
            ;; Skip if goto-def returned our own position (we're a binding site)
            (unless (and (= (hash-ref binding-start 'line) (hash-ref pos 'line))
                         (= (hash-ref binding-start 'character) (hash-ref pos 'character)))
              (define binding-refs (find-references source binding-start))
-             
+
              ;; The original position should be in the binding's references
-             (define original-loc (hash 'uri test-uri 
-                                        'range (hash 'start pos 
+             (define original-loc (hash 'uri test-uri
+                                        'range (hash 'start pos
                                                      'end (hash 'line (hash-ref pos 'line)
                                                                 'character (+ (hash-ref pos 'character)
                                                                               (string-length sym))))))
@@ -1871,7 +1881,7 @@
               (location-member? original-loc binding-refs)
               (format "Find-refs completeness failed for ~a in ~a: ~a not in find-refs(binding-site ~a) = ~a"
                       sym name original-loc binding-start binding-refs))))
-         
+
          ))))
 
   ;; ============================================================
@@ -1891,7 +1901,7 @@
   ;; - Replacing a binding site name changes program semantics
   ;; - The soundness property is about "can I use this name here" which
   ;;   applies to reference positions, not binding positions
-  
+
   (test-case
    "consistency: autocomplete soundness check"
    (for ([sample sample-programs])
@@ -2158,4 +2168,3 @@
                     (substring line (+ col (string-length old-name)))))
   (define new-lines (list-set lines line-num new-line))
   (string-join new-lines "\n"))
-
