@@ -188,6 +188,36 @@
 ;; stx : Pass1Def - partially expanded definition from pass 1
 ;; scp : Scope - disjoin scope to use in pass 2
 
+;; A Progress is a (Listof ProgressStep).
+;; It records how deeply into a syntax-rules pattern structure matching reached before failing.
+;; Each step corresponds to a structural descent: 'first for the car of a pair, 'rest for the cdr.
+;; A longer Progress means the pattern matched more structure before failing, so when multiple
+;; clauses all fail, the one with the longest (deepest) Progress is the best candidate for
+;; optimistic subexpression expansion.
+;;
+;; A ProgressStep is one of:
+;; - 'first : descended into the car of a pair
+;; - 'rest  : descended into the cdr of a pair
+
+;; A MatchResult is (match-result (or PatternEnv #f) Progress (Listof Stx))
+;; Represents the outcome of matching a single syntax-rules pattern against a macro call.
+;; On success, penv holds the pattern variable bindings and ose-stxs holds any ~var-marked
+;; subexpressions (which may still be expanded even on success). On failure, penv is #f,
+;; progress records how far matching got, and ose-stxs holds the ~var subexpressions
+;; collected so far — used for optimistic subexpression expansion so the expander can
+;; continue providing LSP services inside a macro call that doesn't match any clause.
+;;
+;; penv     : (or PatternEnv #f) — pattern variable bindings on success, #f on failure
+;; progress : Progress — how far into the pattern structure matching reached (used on failure
+;;            to select the best-matching clause across multiple syntax-rules clauses)
+;; ose-stxs : (Listof Stx) — subexpressions tagged with (~var id expr) in the pattern,
+;;            collected regardless of success or failure
+(struct match-result [penv progress ose-stxs] #:transparent)
+
+;; match-result-success? : MatchResult -> Boolean
+(define (match-result-success? r)
+  (and (match-result-penv r) #t))
+
 ;; ============================================================
 ;; Keywords and Initial Scope
 ;; ============================================================
@@ -282,7 +312,7 @@
                   (define err (stx-error 'let "bad syntax" expr bad))
                   (record-stx-error! err)
                   `([,err ,(expand-expr e scp)])]
-                 [_ 
+                 [_
                   (define err (stx-error 'let "bad syntax" expr bg))
                   (record-stx-error! err)
                   err]))
@@ -473,13 +503,13 @@
 ;; is never applied.
 (define (record-all-pvar-resolutions-for-macrot! macrot def-scp)
   (match macrot
-      [(stx-quote (,_syntax-rules (,literal-ids ...) ,clauses ...))
-       (define is-literal? (make-is-datum-literal? literal-ids))
-       (for ([clause clauses])
-         (match clause
-           [(stx-quote [,pat ,tmpl])
-            (define pvar-scp (build-pvar-scope pat is-literal? def-scp))
-            (record-pvar-resolutions! tmpl pvar-scp)]))]))
+    [(stx-quote (,_syntax-rules (,literal-ids ...) ,clauses ...))
+     (define is-literal? (make-is-datum-literal? literal-ids))
+     (for ([clause clauses])
+       (match clause
+         [(stx-quote [,pat ,tmpl])
+          (define pvar-scp (build-pvar-scope pat is-literal? def-scp))
+          (record-pvar-resolutions! tmpl pvar-scp)]))]))
 
 ;; build-pvar-scope : Pattern (Id -> Bool) Scope -> Scope
 ;; Builds a scope containing a pattern-variable-binding for each pvar in the pattern.
@@ -537,130 +567,125 @@
 ;; Syntax-Rules Matching
 ;; ============================================================
 
-;; select-syntax-rule : Symbol Syntax Syntax Scope Scope -> (values PatternEnv Syntax)
+;; select-syntax-rule : Symbol Syntax Syntax Scope -> (values PatternEnv Syntax)
 ;; Selects the first matching clause from a syntax-rules transformer.
-;; Returns the pattern environment and the template to instantiate.
+;; On failure, OSE-expands ~var subexpressions from the best-progress clause(s), then raises.
 (define (select-syntax-rule who macrot expr scp)
   ;; macrot is (syntax-rules (literal ...) clause ...)
   (match macrot
-    ;; special case for single clause: optimistic subexpression expansion
-    [(stx-quote (,_syntax-rules (,literal-ids ...) [,pat ,template]))
-     (define is-datum-literal? (make-is-datum-literal? literal-ids))
-     (define-values (penv ose) (match-top-pattern/optimistic pat expr is-datum-literal?))
-     (unless penv
-       (for ([expr ose])
-         (expand-expr expr scp))
-       (raise-and-record-stx-error (stx-error who "no pattern matched" expr #f)))
-     (values penv template)]
     [(stx-quote (,_syntax-rules (,literal-ids ...) ,clauses ...))
      (define is-datum-literal? (make-is-datum-literal? literal-ids))
-     (try-clauses who clauses expr is-datum-literal?)]))
+     (try-patterns who clauses expr is-datum-literal? scp)]))
 
-;; Symbol Pattern Syntax (Id -> Bool) Scope -> (values (or PatternEnv #f) (Listof Stx))
-;; Matches a top-level pattern against syntax.
-;; The car of both pattern and syntax is the macro name (ignored per syntax-rules semantics).
-;; Returns a PatternEnv on success, #f on failure, and OSE expressions to expand on failure.
-(define (match-top-pattern/optimistic pat expr is-datum-literal?)
-  (match* (pat expr)
-    [((stx-quote (,_ . ,pd)) (stx-quote (,_ . ,ed)))
-     (match-pattern/optimistic pd ed is-datum-literal?)]
-    [(_ _) (values #f (list))]))
-
-;; Pattern Syntax (Id -> Bool) Scope -> (values (or PatternEnv #f) (Listof Stx))
-;; Matches a pattern against syntax.
-;; Returns a PatternEnv mapping pattern variables to matched syntax on success,
-;; or #f if the pattern doesn't match,
-;; and a list of OSE expressions to expand on failure.
-;; Special behavior: We still try to match after a failure for optimistic subexpression
-;; expansion.
-(define (match-pattern/optimistic pat expr is-datum-literal?)
-  (match* (pat expr)
-    [((? identifier? lit) (? identifier? target-id))
-     #:when (is-datum-literal? lit)
-     (values
-       (and (equal? (stx->datum lit) (stx->datum target-id))
-            (hash))
-       (list))]
-    [((? identifier? pvar) syn)
-     #:when (not (is-datum-literal? pvar))
-     (values (hash (identifier->key pvar) syn)
-             (list))]
-    [((stx-quote (~var ,(? identifier? pvar) ,(? identifier? (app identifier-symbol 'expr)))) syn)
-     (values (hash (identifier->key pvar) syn)
-             (list syn))]
-    ;; no need to check for bad usage of ~var, it has already been checked in record-all-pvar-resolutions-for-macrot!
-    [((stx-quote (,pa . ,pd)) (stx-quote (,ea . ,ed)))
-     (let/cc abort
-       (define-values (penv-a ose-a) (match-pattern/optimistic pa ea is-datum-literal?))
-       (define-values (penv-d ose-d) (match-pattern/optimistic pd ed is-datum-literal?))
-       (define (fail) (abort #f (append ose-a ose-d)))
-       ;; we are deliberately expanding pd even if pa fails, in case there is a
-       ;; ~var in pa that we need to optimistically expand
-       (unless (and penv-a penv-d) (fail))
-       (values (hash-union penv-a penv-d
-                           #:combine (lambda (ea ed)
-                                       (if (syntax-same-for-binding? ea ed)
-                                           ea
-                                           (fail))))
-               (append ose-a ose-d)))]
-    [(_ _)
-    (values (and (equal? (stx->datum pat) (stx->datum expr))
-                 (hash))
-            (list))]))
-
-;; try-clauses : Symbol [Listof Clause] Syntax (Id -> Bool) -> (values PatternEnv Syntax)
+;; try-patterns : Symbol [Listof Clause] Syntax (Id -> Bool) Scope -> (values PatternEnv Syntax)
 ;; Tries each clause in order until one matches.
-;; A Clause is (list Pattern Template).
-(define (try-clauses who clauses expr is-datum-literal?)
-  (match clauses
-    [(cons clause rest)
-     (match clause
-       [(stx-quote [,pat ,tmpl])
-        (define maybe-penv (match-top-pattern pat expr is-datum-literal?))
-        (if maybe-penv
-            (values maybe-penv tmpl)
-            (try-clauses who rest expr is-datum-literal?))])]
-    ['() (raise-and-record-stx-error (stx-error who "no pattern matched" expr #f))]))
+;; On success, returns (values penv tmpl).
+;; On failure, OSE-expands ~var subexpressions from the best-progress clause(s), then raises.
+;; A Clause is (List pattern template).
+(define (try-patterns who clauses expr is-datum-literal? scp)
+  (define results+tmpls
+    (for/list ([clause clauses])
+      (match clause
+        [(stx-quote [,pat ,tmpl])
+         (cons (match-top-pattern pat expr is-datum-literal?) tmpl)])))
+  (define success
+    (for/first ([r+t results+tmpls] #:when (match-result-success? (car r+t)))
+      r+t))
+  (cond
+    [success (values (match-result-penv (car success)) (cdr success))]
+    [else
+     (define sorted
+       (sort results+tmpls
+             (lambda (a b)
+               (progress<? (match-result-progress (car a))
+                           (match-result-progress (car b))))))
+     (when (pair? sorted)
+       (define best-progress (match-result-progress (car (last sorted))))
+       (for* ([r+t sorted]
+              #:when (equal? (match-result-progress (car r+t)) best-progress)
+              [e (match-result-ose-stxs (car r+t))])
+         (expand-expr e scp)))
+     (raise-and-record-stx-error (stx-error who "no pattern matched" expr #f))]))
 
-;; match-top-pattern : Pattern Syntax (Id -> Bool) -> (or PatternEnv #f)
+;; progress<? : Progress Progress -> Boolean
+;; True if p1 represents less progress than p2.
+;; Longer progress = deeper matching. Equal-length: lexicographic ('first < 'rest).
+(define (progress<? p1 p2)
+  (cond
+    [(< (length p1) (length p2)) #t]
+    [(> (length p1) (length p2)) #f]
+    [else
+     (match* (p1 p2)
+       [('() '()) #f]
+       [((cons 'first _) (cons 'rest _)) #t]
+       [((cons 'rest _) (cons 'first _)) #f]
+       [((cons _ r1) (cons _ r2)) (progress<? r1 r2)])]))
+
+(module+ test
+  (require rackunit)
+  (check-true  (progress<? '() '(first)))
+  (check-true  (progress<? '(first) '(first first)))
+  (check-false (progress<? '(first first) '(first)))
+  (check-false (progress<? '(first) '(first)))
+  (check-true  (progress<? '(first) '(rest)))
+  (check-false (progress<? '(rest) '(first)))
+  (check-true  (progress<? '(first rest) '(rest first)))
+  (check-false (progress<? '(rest first) '(first rest))))
+
+;; match-top-pattern : Pattern Stx (Id -> Bool) -> MatchResult
 ;; Matches a top-level pattern against syntax.
-;; The car of both pattern and syntax is the macro name (ignored per syntax-rules semantics).
-;; Returns a PatternEnv on success, #f on failure.
+;; Skips the macro name (first element) per syntax-rules semantics.
 (define (match-top-pattern pat expr is-datum-literal?)
   (match* (pat expr)
     [((stx-quote (,_ . ,pd)) (stx-quote (,_ . ,ed)))
-     (match-pattern pd ed is-datum-literal?)]
-    [(_ _) #f]))
+     (match-pattern pd ed is-datum-literal? (list 'rest))]
+    [(_ _) (match-result #f '() '())]))
 
-;; match-pattern : Pattern Syntax (Id -> Bool) -> (or PatternEnv #f)
-;; Matches a pattern against syntax.
-;; Returns a PatternEnv mapping pattern variables to matched syntax on success,
-;; or #f if the pattern doesn't match.
-(define (match-pattern pat expr is-datum-literal?)
+;; match-pattern : Pattern Stx (Id -> Bool) [ProgressRev] -> MatchResult
+;; Matches a pattern against syntax, accumulating progress in reverse.
+;; Continues into both sides of a pair even after one fails, to collect all ~var stxs.
+(define (match-pattern pat expr is-datum-literal? [progress-rev '()])
   (match* (pat expr)
+    ;; datum literal identifier: succeeds only on equal symbol
     [((? identifier? lit) (? identifier? target-id))
      #:when (is-datum-literal? lit)
-     (and (equal? (stx->datum lit) (stx->datum target-id))
-          (hash))]
+     (if (equal? (stx->datum lit) (stx->datum target-id))
+         (match-result (hash) (reverse progress-rev) '())
+         (match-result #f (reverse progress-rev) '()))]
+    ;; ~var: always succeeds, records stx for OSE; must appear before general pair case
+    [((stx-quote (~var ,(? identifier? pvar) ,(? identifier? (app identifier-symbol 'expr)))) syn)
+     (match-result (hash (identifier->key pvar) syn) (reverse progress-rev) (list syn))]
+    ;; pattern variable identifier: always succeeds, no OSE
     [((? identifier? pvar) syn)
      #:when (not (is-datum-literal? pvar))
-     (hash (identifier->key pvar) syn)]
+     (match-result (hash (identifier->key pvar) syn) (reverse progress-rev) '())]
+    ;; pair: recurse into both sides; continue into cdr even if car fails
     [((stx-quote (,pa . ,pd)) (stx-quote (,ea . ,ed)))
-     (=> fail)
-     (define penv-a (match-pattern pa ea is-datum-literal?))
-     (unless penv-a (fail))
-     (define penv-d (match-pattern pd ed is-datum-literal?))
-     (unless penv-d (fail))
-     (hash-union penv-a penv-d
-                 #:combine (lambda (ea ed)
-                             (if (syntax-same-for-binding? ea ed)
-                                 ea
-                                 (fail))))]
+     (define ra (match-pattern pa ea is-datum-literal? (cons 'first progress-rev)))
+     (define rd (match-pattern pd ed is-datum-literal? (cons 'rest progress-rev)))
+     (define ose (append (match-result-ose-stxs ra) (match-result-ose-stxs rd)))
+     (cond
+       [(not (match-result-success? ra))
+        (match-result #f (match-result-progress ra) ose)]
+       [(not (match-result-success? rd))
+        (match-result #f (match-result-progress rd) ose)]
+       [else
+        (let/cc fail
+          (match-result
+           (hash-union (match-result-penv ra) (match-result-penv rd)
+                       #:combine (lambda (va vd)
+                                   (if (syntax-same-for-binding? va vd)
+                                       va
+                                       (fail (match-result #f (reverse progress-rev) ose)))))
+           (reverse progress-rev)
+           ose))])]
+    ;; datum equality: handles literal values and structural mismatches
     [(_ _)
-    (and (equal? (stx->datum pat) (stx->datum expr))
-         (hash))]))
+     (if (equal? (stx->datum pat) (stx->datum expr))
+         (match-result (hash) (reverse progress-rev) '())
+         (match-result #f (reverse progress-rev) '()))]))
 
-;; make-is-literal? : [Listof Identifier] -> (Identifier -> Boolean)
+;; make-is-datum-literal? : [Listof Identifier] -> (Identifier -> Boolean)
 ;; Creates a predicate that checks if an identifier is a literal
 ;; (using bound-identifier=? comparison).
 (define (make-is-datum-literal? literal-ids)
@@ -1318,30 +1343,30 @@
   (check-match
    (expand
     '(let-syntax ([m (syntax-rules () [(m . a) (let ([a 2]) a)])])
-        (m . a)))
+       (m . a)))
    '(let ([a1 2]) a1))
-  
+
   ;; dotted (a . (b)) = (a b)
   (check-match
    (expand
     '(block (#%expression . (2))))
    '(block (#%expression 2)))
-  
+
   ;; fault-tolerant block: unbound call in definition context treated as expression
   (check-match
    (expand
     '(block
-       (bad)
-       (define x 2)))
+      (bad)
+      (define x 2)))
    `(block
-      (#%expression ,(? stx-error?))
-      (define x0 2)))
+     (#%expression ,(? stx-error?))
+     (define x0 2)))
 
   ;; bare identifier in block - treated as implicit #%expression
   (check-match
    (expand '(block x))
    `(block (#%expression ,(? stx-error?))))
-  
+
   ;; datum literals
   (check-equal?
    (expand
@@ -1366,10 +1391,10 @@
    (expand
     '(let-syntax () (let ([x 1]) x)))
    '(let ([x0 1]) x0))
-   (check-equal?
-    (expand
-     '(let-syntax ([m (syntax-rules () [(m (~var x expr)) x])]) (m 1)))
-    '1)
+  (check-equal?
+   (expand
+    '(let-syntax ([m (syntax-rules () [(m (~var x expr)) x])]) (m 1)))
+   '1)
   (test-case
    "OSE doesn't happen when there is not a failure"
    (define sexp

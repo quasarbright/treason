@@ -1326,6 +1326,96 @@
    (check-equal?
     (goto-definition source (find-position source "q" 1))
     (list (hash 'uri test-uri 'range (find-range source "q" 0)))))
+  (test-case
+   "optimistic sub-expression expansion: multi-clause ~var"
+   ;; No clause matches (literal 1 and 2 don't match 3), but the ~var subexpr
+   ;; from the best-progress clause should still be expanded via OSE.
+   (define source
+     "(let-syntax ([m (syntax-rules ()
+                        [(_ 1 (~var e expr)) e]
+                        [(_ 2 (~var e expr)) e])])
+        (m 3 (let ([q 1]) q)))")
+   (check-equal?
+    (goto-definition source (find-position source "q" 1))
+    (list (hash 'uri test-uri 'range (find-range source "q" 0)))))
+
+  (test-case
+   "optimistic sub-expression expansion: ~var before failing literal"
+   ;; (~var e expr) matches the first arg, but the following literal 1 fails against 2.
+   ;; The ~var subexpr should still be OSE-expanded even though it precedes the failure.
+   (define source
+     "(let-syntax ([m (syntax-rules () [(_ (~var e expr) 1) e])])
+        (m (let ([q 1]) q) 2))")
+   (check-equal?
+    (goto-definition source (find-position source "q" 1))
+    (list (hash 'uri test-uri 'range (find-range source "q" 0)))))
+
+  (test-case
+   "optimistic sub-expression expansion: ~var after failing literal"
+   ;; Literal 1 fails against 2, but matching continues into the rest of the pattern
+   ;; and the ~var subexpr is still collected and OSE-expanded.
+   (define source
+     "(let-syntax ([m (syntax-rules () [(_ 1 (~var e expr)) e])])
+        (m 2 (let ([q 1]) q)))")
+   (check-equal?
+    (goto-definition source (find-position source "q" 1))
+    (list (hash 'uri test-uri 'range (find-range source "q" 0)))))
+
+  (test-case
+   "optimistic sub-expression expansion: multi-clause, first clause has more progress"
+   ;; Clause 1: (_ (1 (~var e expr) 2)) fails deep (2 vs 3), has ~var.
+   ;; Clause 2: (_ 1) fails shallow (1 vs list).
+   ;; Clause 1 wins by progress — its ~var subexpr is OSE-expanded.
+   (define source
+     "(let-syntax ([m (syntax-rules ()
+                        [(_ (1 (~var e expr) 2)) e]
+                        [(_ 1) 42])])
+        (m (1 (let ([q 1]) q) 3)))")
+   (check-equal?
+    (goto-definition source (find-position source "q" 1))
+    (list (hash 'uri test-uri 'range (find-range source "q" 0)))))
+
+  (test-case
+   "optimistic sub-expression expansion: multi-clause, second clause has more progress"
+   ;; Clause 1: (_ 1) fails shallow. Clause 2: (_ (1 (~var e expr) 2)) fails deep with ~var.
+   ;; Clause 2 wins by progress — its ~var subexpr is OSE-expanded.
+   (define source
+     "(let-syntax ([m (syntax-rules ()
+                        [(_ 1) 42]
+                        [(_ (1 (~var e expr) 2)) e])])
+        (m (1 (let ([q 1]) q) 3)))")
+   (check-equal?
+    (goto-definition source (find-position source "q" 1))
+    (list (hash 'uri test-uri 'range (find-range source "q" 0)))))
+
+  (test-case
+   "optimistic sub-expression expansion: multi-clause tied progress, both ~vars expanded"
+   ;; Both clauses fail at the same depth (literal 9 matches neither 1 nor 2).
+   ;; Both have ~var on the same subexpr — it gets expanded (twice, idempotent).
+   (define source
+     "(let-syntax ([m (syntax-rules ()
+                        [(_ (1 (~var e1 expr))) e1]
+                        [(_ (2 (~var e2 expr))) e2])])
+        (m (9 (let ([q 1]) q))))")
+   (check-equal?
+    (goto-definition source (find-position source "q" 1))
+    (list (hash 'uri test-uri 'range (find-range source "q" 0)))))
+
+  (test-case
+   "optimistic sub-expression expansion: both sides of pair fail, both ~vars collected"
+   ;; pa=(1 (~var a expr)) fails (1 vs 9), pa's ~var still collected.
+   ;; pd=((2 (~var b expr))) also fails (2 vs 9), pd's ~var still collected.
+   ;; Both subexpressions are OSE-expanded.
+   (define source
+     "(let-syntax ([m (syntax-rules ()
+                        [(_ (1 (~var a expr)) (2 (~var b expr))) (let ([x a]) b)])])
+        (m (9 (let ([q1 1]) q1)) (9 (let ([q2 2]) q2))))")
+   (check-equal?
+    (goto-definition source (find-position source "q1" 1))
+    (list (hash 'uri test-uri 'range (find-range source "q1" 0))))
+   (check-equal?
+    (goto-definition source (find-position source "q2" 1))
+    (list (hash 'uri test-uri 'range (find-range source "q2" 0)))))
   )
 
 ;; ============================================================
