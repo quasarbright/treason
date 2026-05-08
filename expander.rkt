@@ -272,6 +272,7 @@
 (define (expand-expr expr scp)
   (match expr
     [(app stx-e (? number? n)) n]
+    [(app stx-e (? boolean? b)) b]
     [(? identifier? id)
      (define binding (scope-resolve scp id))
      (cond
