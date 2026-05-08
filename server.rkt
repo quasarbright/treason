@@ -183,14 +183,22 @@ do we want actual types instead of json?
     ;; analyze-and-store! : String String -> Void
     ;; Parses source text, runs the expander, stores the result, and pushes diagnostics.
     ;; If parsing fails, publishes the parse error as a diagnostic and skips expansion.
-    ;; On parse error, the previous result for the URI is preserved.
+    ;; If the expander crashes unexpectedly, logs the error and publishes a fallback diagnostic.
+    ;; On any error, the previous result for the URI is preserved.
     (define/private (analyze-and-store! uri text)
       (with-handlers ([exn:fail:parse?
                        (lambda (err)
                          (hash-set! results uri (parse-error-result))
                          (send client textDocument/publishDiagnostics
                                (hasheq 'uri uri
-                                       'diagnostics (list (parse-error->diagnostic err)))))])
+                                       'diagnostics (list (parse-error->diagnostic err)))))]
+                      [exn:fail?
+                       (lambda (err)
+                         (log-server-error "unexpected expander crash: ~a" (exn->string err))
+                         (hash-set! results uri (parse-error-result))
+                         (send client textDocument/publishDiagnostics
+                               (hasheq 'uri uri
+                                       'diagnostics (list (expander-crash->diagnostic err)))))])
         (define syns (string->stxs uri text))
         (define result (analyze! syns))
         (hash-set! results uri result)
@@ -549,6 +557,15 @@ do we want actual types instead of json?
           'severity DiagnosticSeverity/Error
           'source "treason"
           'message (stx-error-diagnostic-message err)))
+
+;; exn:fail? -> hasheq?
+;; Converts an unexpected expander crash to a fallback LSP diagnostic at the start of the file.
+(define (expander-crash->diagnostic err)
+  (hasheq 'range (hash 'start (hash 'line 0 'character 0)
+                        'end   (hash 'line 0 'character 0))
+          'severity DiagnosticSeverity/Error
+          'source "treason"
+          'message (exn-message err)))
 
 ;; exn:fail:parse? -> hasheq?
 ;; Converts a parse error exception to an LSP diagnostic.

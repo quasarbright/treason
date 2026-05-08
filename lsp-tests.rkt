@@ -1182,6 +1182,20 @@
           (hasheq 'textDocument (hasheq 'uri test-uri) 'position any-pos))
     '()))
 
+  ;; 17. Expander crash doesn't crash the server — graceful diagnostic instead
+  (test-case
+   "expander crash: #t produces a diagnostic, not a server crash"
+   (define client (new capturing-client%))
+   (define server (new server% [client client]))
+   (send server initialize (hasheq))
+   (check-not-exn
+    (lambda ()
+      (send server textDocument/didOpen
+            (hasheq 'textDocument (hasheq 'uri test-uri 'text "#t")))))
+   (check-true (for/or ([d (send client get-diagnostics)])
+                 (= (hash-ref d 'severity 0) 1))
+               "expected at least one error-severity diagnostic"))
+
   ;; ============================================================
   ;; Error message tests
   ;; ============================================================
