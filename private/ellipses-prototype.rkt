@@ -3,7 +3,6 @@
 #|
 prototype language with syntax rules that supports ellipses
 restrictions:
-- ellipses depth of pattern variables must match EXACTLY
 - ellipses may only occur at the END of a list pattern (no backtracking)
 |#
 
@@ -38,6 +37,23 @@ restrictions:
 ;; A (Rose X) is one of
 ;; X
 ;; (Listof (Rose X))
+
+;; Expr Pattern Template -> Expr
+(define (run-clause expr pat template)
+  (expand-template template (match-pattern pat expr)))
+
+(module+ test
+  (check-equal?
+   (run-clause '(let ([x 1] [y 2]) (void) (+ x y))
+               '(let ([x e] ...) body ...)
+               '((lambda (x ...) body ...) e ...))
+   '((lambda (x y) (void) (+ x y)) 1 2))
+  (check-equal?
+   (run-clause '(1 2 3 4)
+               '(a b ...)
+               '((a b) ...))
+   '((1 2) (1 3) (1 4)))
+  )
 
 ;; Pat Expr -> PatternEnv
 (define (match-pattern pat expr)
@@ -157,7 +173,11 @@ restrictions:
      (define lists
        (for/list ([var vars])
          (hash-ref env var (lambda () (error 'expand-template "unbound var ~a" var)))))
-     (define lengths (for/list ([lst lists]) (length lst)))
+     (define lengths
+       (for/list ([lst lists] #:when (list? lst))
+         (length lst)))
+     (when (null? lengths)
+       (error 'expand-template "too many ellipses for template ~a" t))
      (unless (= (apply max lengths) (apply min lengths))
        (error 'expand-template "unequal ellipsis match counts"))
      (define len (first lengths))
@@ -165,9 +185,7 @@ restrictions:
        (for/hash ([var vars])
          ;; guaranteed that hash-ref will succeed since we already did this
          (define lst (hash-ref env var))
-         (unless (list? lst)
-           (error 'expand-template "ellipsis depth mismatch. cannot ellipsize ~a" var))
-         (values var (list-ref lst i))))]))
+         (values var (if (list? lst) (list-ref lst i) lst))))]))
 
 (module+ test
   (check-equal?
@@ -215,4 +233,7 @@ restrictions:
                                                 (list (stx 3) (stx 4) (stx 5))
                                                 (list))))
    '((1 2) (3 4 5) ()))
+  (check-equal?
+   (expand-template '((a b) ...) (hash 'a (stx 1) 'b (list (stx 2) (stx 3))))
+   '((1 2) (1 3)))
   )
