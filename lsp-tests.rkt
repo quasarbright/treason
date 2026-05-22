@@ -1449,6 +1449,100 @@
    (check-equal?
     (goto-definition source (find-position source "q2" 1))
     (list (hash 'uri test-uri 'range (find-range source "q2" 0)))))
+
+  ;; ============================================================
+  ;; OSE with ellipsis patterns
+  ;; ============================================================
+
+  (test-case
+   "optimistic sub-expression expansion: ~var inside ellipsis, literal fails before ellipsis"
+   ;; Pattern (_ 99 (~var e expr) ...) — literal 99 fails against 0.
+   ;; The ellipsis iterations still run and collect both ~var stxs for OSE.
+   (define source
+     "(let-syntax ([m (syntax-rules ()
+                        [(_ 99 (~var e expr) ...) (let ([x 1]) x)])])
+        (m 0 (let ([q1 1]) q1) (let ([q2 2]) q2)))")
+   (check-equal?
+    (goto-definition source (find-position source "q1" 1))
+    (list (hash 'uri test-uri 'range (find-range source "q1" 0))))
+   (check-equal?
+    (goto-definition source (find-position source "q2" 1))
+    (list (hash 'uri test-uri 'range (find-range source "q2" 0)))))
+
+  (test-case
+   "optimistic sub-expression expansion: ~var inside ellipsis sub-pattern, some elements fail"
+   ;; Pattern (_ (1 (~var e expr)) ...) — each element must start with literal 1.
+   ;; First element (1 ...) matches; second (2 ...) fails the literal.
+   ;; Both ~var stxs are collected as OSE from all iterations.
+   (define source
+     "(let-syntax ([m (syntax-rules ()
+                        [(_ (1 (~var e expr)) ...) (let ([x 1]) x)])])
+        (m (1 (let ([q1 1]) q1)) (2 (let ([q2 2]) q2))))")
+   (check-equal?
+    (goto-definition source (find-position source "q1" 1))
+    (list (hash 'uri test-uri 'range (find-range source "q1" 0))))
+   (check-equal?
+    (goto-definition source (find-position source "q2" 1))
+    (list (hash 'uri test-uri 'range (find-range source "q2" 0)))))
+
+  (test-case
+   "optimistic sub-expression expansion: ~var in ellipsis, multi-clause, ellipsis clause wins"
+   ;; Clause 1: (_ 0 (1 (~var e expr)) ...) — matches literal 0, then runs ellipsis.
+   ;;   Iteration 1 (1 q1-expr): literal 1 matches — ~var collects q1-expr. Success.
+   ;;   Iteration 2 (2 q2-expr): literal 1 fails against 2 — ~var still collects q2-expr. Fail.
+   ;;   Overall: fails deep (inside iteration 2).
+   ;; Clause 2: (_ 99 x) — fails very early (99 vs 0), shallower.
+   ;; Clause 1 wins by progress; its ~var stxs from both iterations are OSE-expanded.
+   (define source
+     "(let-syntax ([m (syntax-rules ()
+                        [(_ 0 (1 (~var e expr)) ...) (let ([x 1]) x)]
+                        [(_ 99 x) x])])
+        (m 0 (1 (let ([q1 1]) q1)) (2 (let ([q2 2]) q2))))")
+   (check-equal?
+    (goto-definition source (find-position source "q1" 1))
+    (list (hash 'uri test-uri 'range (find-range source "q1" 0))))
+   (check-equal?
+    (goto-definition source (find-position source "q2" 1))
+    (list (hash 'uri test-uri 'range (find-range source "q2" 0)))))
+
+  ;; ============================================================
+  ;; Ellipsis error cases
+  ;; ============================================================
+
+  (test-case
+   "error message: bare ... in pattern"
+   ;; A bare ellipsis in a non-ellipsis position in the pattern is a syntax error.
+   (check-true (has-diagnostic-from?
+                "(let-syntax ([m (syntax-rules () [(_ ...) 1])]) (m 1))"
+                'syntax-rules)))
+
+  (test-case
+   "error message: bare ... in template"
+   ;; A bare ellipsis outside of a (t ...) splice in a template is a syntax error.
+   (check-true (has-diagnostic-from?
+                "(let-syntax ([m (syntax-rules () [(_ x) ...])]) (m 1))"
+                'syntax-rules)))
+
+  (test-case
+   "error message: missing ellipsis in template for pvar"
+   ;; Pattern variable x is bound at depth 1 (via ellipsis), but template uses x without ellipsis.
+   (check-true (has-diagnostic-from?
+                "(let-syntax ([m (syntax-rules () [(_ x ...) x])]) (m 1 2))"
+                'syntax-rules)))
+
+  (test-case
+   "error message: too many ellipses in template"
+   ;; x is a depth-0 pvar but the template uses it under ellipsis.
+   (check-true (has-diagnostic-from?
+                "(let-syntax ([m (syntax-rules () [(_ x) (x ...)])]) (m 1))"
+                'syntax-rules)))
+
+  (test-case
+   "error message: ellipsis variable mismatch in template"
+   ;; x matches 2 elements and y matches 3 elements — cannot zip them together.
+   (check-true (has-diagnostic-from?
+                "(let-syntax ([m (syntax-rules () [(_ (x ...) (y ...)) ((x y) ...)])]) (m (1 2) (3 4 5)))"
+                'syntax-rules)))
   )
 
 ;; ============================================================

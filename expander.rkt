@@ -32,12 +32,14 @@
 ;;      | number
 ;;      | id
 ;;      | (~var x expr) ;; annotated variable. this is a divergence from syntax-rules
+;;      | (pat ...)     ;; ellipsis: zero or more, only at end of a list pattern
 ;;
 ;; tmpl := (tmpl . tmpl)
 ;;       | ()
 ;;       | number
 ;;       | id
 ;;       | id that is pvar
+;;       | (tmpl ...)   ;; ellipsis: repeat tmpl once per matched ellipsis element
 
 (provide (all-defined-out))
 (require "stx.rkt")
@@ -458,6 +460,10 @@
      (expand-def-pass2 syn scp)]))
 
 ;; ============================================================
+;; Ellipsis Utilities
+;; ============================================================
+
+;; ============================================================
 ;; Macro Expansion
 ;; ============================================================
 
@@ -479,19 +485,89 @@
 ;; expand-template : Syntax PatternEnv Mark -> Syntax
 ;; Instantiates a template: substitutes pattern variable references with
 ;; use-site syntax from penv; marks all other identifiers with def-mark.
+;; Raises stx-error on bare ..., or on a pvar used at wrong ellipsis depth.
 (define (expand-template tmpl penv def-mark)
   (match tmpl
+    [(and (stx '... _ _) id)
+     (raise-and-record-stx-error
+      (stx-error 'syntax-rules "unexpected ellipsis in template" id #f))]
     [(? identifier? id)
-     (if (hash-has-key? penv (identifier->key id))
-         (hash-ref penv (identifier->key id))   ; use-site syntax, keep as-is
-         (mark-id id def-mark))]           ; macro-introduced, mark it
+     (cond
+       [(hash-has-key? penv (identifier->key id))
+        (define val (hash-ref penv (identifier->key id)))
+        (if (list? val)
+            (raise-and-record-stx-error
+             (stx-error 'syntax-rules "missing ellipsis in template for pattern variable" id #f))
+            val)]
+       [else (mark-id id def-mark)])]
     [(stx (? list? elems) spn marks)
-     (stx (map (lambda (t) (expand-template t penv def-mark)) elems) spn marks)]
+     (stx (expand-template-list elems penv def-mark) spn marks)]
     [(stx (cons a d) spn marks)
      (stx (cons (expand-template a penv def-mark)
                 (expand-template d penv def-mark))
           spn marks)]
     [_ tmpl]))  ; numbers, booleans, etc. pass through
+
+;; expand-template-list : (Listof Stx) PatternEnv Mark -> (Listof Stx)
+;; Expands a list of template elements, splicing (t ...) into repeated expansions.
+(define (expand-template-list elems penv def-mark)
+  (match elems
+    ['() '()]
+    [(stx-quote (,t ,(stx '... _ _) . ,rest))
+     (define sub-envs (split-env penv t))
+     (define expanded (for/list ([sub-env sub-envs])
+                        (expand-template t sub-env def-mark)))
+     (append expanded (expand-template-list rest penv def-mark))]
+    [(cons t rest)
+     (cons (expand-template t penv def-mark)
+           (expand-template-list rest penv def-mark))]))
+
+;; template-free-variables : Stx -> (Listof IdentifierKey)
+;; Returns the IdentifierKeys for all non-ellipsis identifiers in a template.
+(define (template-free-variables tmpl)
+  (let loop ([t tmpl] [acc '()])
+    (cond
+      [(and (stx? t) (eq? (stx-e t) '...)) acc]
+      [(identifier? t)
+       (define key (identifier->key t))
+       (if (member key acc) acc (cons key acc))]
+      [(stx? t) (loop (stx-e t) acc)]
+      [(list? t) (foldl (lambda (elem a) (loop elem a)) acc t)]
+      [(pair? t) (loop (car t) (loop (cdr t) acc))]
+      [else acc])))
+
+;; split-env : PatternEnv Stx -> (Listof PatternEnv)
+;; Splits a pattern environment for one level of ellipsis expansion of template t.
+;; Returns one sub-environment per iteration, threading depth-≥1 vars through
+;; indexing and passing depth-0 vars unchanged to every iteration (mixed depth).
+;; Raises stx-error if all variables are depth-0 (too many ellipses)
+;; or if depth-≥1 variables have different match counts.
+(define (split-env penv t)
+  ;; Only consider vars actually present in penv — non-pvar identifiers in the
+  ;; template (e.g. macro-introduced keywords) are not pattern variables and
+  ;; must not appear in sub-envs (which would cause expand-template to return
+  ;; the #f default instead of marking them with def-mark).
+  (define vars (filter (lambda (v) (hash-has-key? penv v))
+                       (template-free-variables t)))
+  (cond
+    [(null? vars) '()]
+    [else
+     (define rose-vals (for/list ([var vars]) (hash-ref penv var)))
+     (define list-vals (filter list? rose-vals))
+     (cond
+       [(null? list-vals)
+        (raise-and-record-stx-error
+         (stx-error 'syntax-rules "too many ellipses in template" t #f))
+        '()]
+       [else
+        (define lengths (map length list-vals))
+        (unless (apply = lengths)
+          (raise-and-record-stx-error
+           (stx-error 'syntax-rules "ellipsis variable mismatch in template" t #f)))
+        (define len (first lengths))
+        (for/list ([i (in-range len)])
+          (for/hash ([var vars] [rose rose-vals])
+            (values var (if (list? rose) (list-ref rose i) rose))))])]))
 
 ;; ============================================================
 ;; Pattern Variable LSP Resolution
@@ -523,7 +599,7 @@
   (let loop ([p pat])
     (match p
       [(? identifier? id)
-       (unless (or (is-literal? id) (eq? (identifier-symbol id) '_))
+       (unless (or (is-literal? id) (eq? (identifier-symbol id) '_) (eq? (identifier-symbol id) '...))
          (scope-bind! scp id (pattern-variable-binding id)))]
       [(stx-quote (~var ,(? identifier? id) ,(? identifier? (app identifier-symbol 'expr))))
        (unless (or (is-literal? id) (eq? (identifier-symbol id) '_))
@@ -544,6 +620,7 @@
 ;; spuriously highlighting them (e.g. let, if) in unused macros.
 (define (record-pvar-resolutions! tmpl pvar-scp)
   (match tmpl
+    [(stx '... _ _) (void)]
     [(? identifier? id)
      (define bnd (scope-resolve-internal pvar-scp id))
      (when (or (pattern-variable-binding? bnd) (cursor-identifier? id))
@@ -662,10 +739,51 @@
     ;; ~var: always succeeds, records stx for OSE; must appear before general pair case
     [((stx-quote (~var ,(? identifier? pvar) ,(? identifier? (app identifier-symbol 'expr)))) syn)
      (match-result (hash (identifier->key pvar) syn) (reverse progress-rev) (list syn))]
+    ;; bare ...: not a valid pattern variable
+    [((and (stx '... _ _) dots) _)
+     (record-stx-error! (stx-error 'syntax-rules "unexpected ellipsis in pattern" dots #f))
+     (match-result #f (reverse progress-rev) '())]
     ;; pattern variable identifier: always succeeds, no OSE
     [((? identifier? pvar) syn)
      #:when (not (is-datum-literal? pvar))
      (match-result (hash (identifier->key pvar) syn) (reverse progress-rev) '())]
+    ;; ellipsis: (p ...) at the end of a list — match p against each element of the input list.
+    ;; Larger patterns like (a b ...) reach this case through the pair case for (a . (b ...)).
+    ;; Fails on the FIRST element mismatch (that progress is reported); subsequent
+    ;; iterations run only to collect OSE subexpressions, mirroring the cons case.
+    ;; Each iteration advances progress by one REST before the FIRST for that element.
+    [((stx-quote (,p ,(stx '... _ _))) expr)
+     (define input-elems
+       (cond [(list? expr) expr]
+             [(stx? expr) (let ([e (stx-e expr)]) (and (list? e) e))]
+             [else #f]))
+     (cond
+       [(not input-elems)
+        (match-result #f (reverse progress-rev) '())]
+       [else
+        (let loop ([es input-elems]
+                   [inner-progress-rev (cons 'first progress-rev)]
+                   [first-failure #f]
+                   [all-oses '()]
+                   [envs-rev '()])
+          (cond
+            [(null? es)
+             (if first-failure
+                 (match-result #f (match-result-progress first-failure) all-oses)
+                 (match-result (combine-envs (reverse envs-rev) p is-datum-literal?)
+                               (reverse progress-rev)
+                               all-oses))]
+            [else
+             (define r (match-pattern p (car es) is-datum-literal? inner-progress-rev))
+             (define next-progress-rev
+               (cons 'first (cons 'rest (cdr inner-progress-rev))))
+             (loop (cdr es)
+                   next-progress-rev
+                   (or first-failure (and (not (match-result-success? r)) r))
+                   (append all-oses (match-result-ose-stxs r))
+                   (if (match-result-success? r)
+                       (cons (match-result-penv r) envs-rev)
+                       envs-rev))]))])]
     ;; pair: recurse into both sides; continue into cdr even if car fails
     [((stx-quote (,pa . ,pd)) (stx-quote (,ea . ,ed)))
      (define ra (match-pattern pa ea is-datum-literal? (cons 'first progress-rev)))
@@ -698,6 +816,38 @@
 (define (make-is-datum-literal? literal-ids)
   (lambda (id)
     (memf (lambda (x) (eq? (identifier-symbol x) (identifier-symbol id))) literal-ids)))
+
+;; combine-envs : (Listof PatternEnv) Stx (Stx -> Boolean) -> PatternEnv
+;; Zips per-iteration pattern environments into a single environment with Rose values.
+;; Each pattern variable in pat maps to a list of its matched values across iterations.
+;; For the empty-list case (no iterations), all pvars map to the empty list.
+(define (combine-envs envs pat is-datum-literal?)
+  (define vars (pattern-free-variables pat is-datum-literal?))
+  (for/hash ([var vars])
+    (values var (for/list ([env envs]) (hash-ref env var)))))
+
+;; pattern-free-variables : Stx (Stx -> Boolean) -> (Listof IdentifierKey)
+;; Returns the IdentifierKeys for all pattern variables in a pattern.
+;; Excludes datum literals, ellipsis (...), and wildcards (_).
+(define (pattern-free-variables pat is-datum-literal?)
+  (let loop ([p pat] [acc '()])
+    (match p
+      [(stx '... _ _) acc]
+      [(? (lambda (x) (and (identifier? x) (is-datum-literal? x)))) acc]
+      [(stx-quote _) acc]
+      [(? identifier? id)
+       (define key (identifier->key id))
+       (if (member key acc) acc (cons key acc))]
+      [(stx-quote (~var ,(? identifier? pvar) ,_))
+       (define key (identifier->key pvar))
+       (if (member key acc) acc (cons key acc))]
+      [(stx-quote (,a . ,d))
+       (loop a (loop d acc))]
+      [(? list? elems)
+       (foldl (lambda (elem a) (loop elem a)) acc elems)]
+      [(? pair?)
+       (loop (car p) (loop (cdr p) acc))]
+      [_ acc])))
 
 ;; ============================================================
 ;; Scope Operations
@@ -1412,4 +1562,68 @@
        (my-let ([x 1]) x)))
    (define result (analyze! (list (sexpr->syntax sexp))))
    (check-equal? (expander-result-errors result) (list)))
+
+  ;; ----------------------------------------
+  ;; Ellipsis tests
+  ;; ----------------------------------------
+
+  ;; basic: zero elements
+  (check-equal?
+   (expand
+    '(let-syntax ([m (syntax-rules () [(m x ...) (block x ...)])])
+       (m)))
+   '(block))
+
+  ;; basic: single pvar ellipsis expands all args
+  (check-equal?
+   (expand
+    '(let-syntax ([my-list (syntax-rules () [(my-list x ...) (block x ...)])])
+       (my-list 1 2 3)))
+   '(block (#%expression 1) (#%expression 2) (#%expression 3)))
+
+  ;; mixed depth: a is depth-0, b is depth-1
+  (check-equal?
+   (expand
+    '(let-syntax ([rep (syntax-rules () [(rep a b ...) (block (block a b) ...)])])
+       (rep 1 2 3 4)))
+   '(block (#%expression (block (#%expression 1) (#%expression 2)))
+           (#%expression (block (#%expression 1) (#%expression 3)))
+           (#%expression (block (#%expression 1) (#%expression 4)))))
+
+  ;; structured inner pattern: ([x e] ...) with template using both pvars
+  ;; gensym names vary so we capture and compare: the binding and reference must match
+  (check-match
+   (expand
+    '(let-syntax ([my-let* (syntax-rules ()
+                              [(my-let* ([x e] ...) body)
+                               (block (define x e) ... body)])])
+       (my-let* ([a 1] [b 2] [c 3]) a)))
+   `(block (define ,a 1) (define ,_ 2) (define ,_ 3) (#%expression ,a-ref))
+   (equal? a a-ref))
+
+  ;; nested ellipsis: ((a ...) ...)
+  (check-equal?
+   (expand
+    '(let-syntax ([nested (syntax-rules ()
+                             [(nested (a ...) ...) (block (block a ...) ...)])])
+       (nested (1 2) (3 4 5) ())))
+   '(block (#%expression (block (#%expression 1) (#%expression 2)))
+           (#%expression (block (#%expression 3) (#%expression 4) (#%expression 5)))
+           (#%expression (block))))
+
+  ;; leading fixed + trailing ellipsis in pattern: (first rest ...)
+  ;; demonstrates that ellipsis at end of list works via pair-case recursion on (rest ...)
+  (check-equal?
+   (expand
+    '(let-syntax ([m (syntax-rules () [(m first rest ...) (block first rest ...)])])
+       (m 10 20 30)))
+   '(block (#%expression 10) (#%expression 20) (#%expression 30)))
+
+  ;; template: content after the ellipsis — (x ... sentinel)
+  ;; demonstrates that ... need not be the last element in a template list
+  (check-equal?
+   (expand
+    '(let-syntax ([m (syntax-rules () [(m x ...) (block x ... 99)])])
+       (m 1 2 3)))
+   '(block (#%expression 1) (#%expression 2) (#%expression 3) (#%expression 99)))
   )
