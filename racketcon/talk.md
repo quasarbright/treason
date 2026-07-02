@@ -31,8 +31,9 @@ feedback from michael 2
 - [x] for rewriting fault tolerance: (after talking about how ts and even rust just keep going) basic fault tolerance like with definitions is easy. we can just copy that, which is what rust and lean do. macros don't make this hard, we can just keep going. but what about services within a bad macro use site? that's where the opacity of macros makes this difficult, and where SSE comes in. And this is our main novel contribution
 
 - [x] put this in the repo
-- [ ] shorten limitations to the high level, but keep them somewhere for ourselves. want to make this exciting for future work and not sad like treason sucks lol.
-- [ ] maybe combine limitations, open questions, future work, maybe just combine OQ and FW
+- [x] shorten limitations to the high level, but keep them somewhere for ourselves. want to make this exciting for future work and not sad like treason sucks lol.
+- [x] maybe combine limitations, open questions, future work, maybe just combine OQ and FW
+  - just going to keep as is
 - [ ] talk more about the vision for syntax-spec + Treason. like a whole example and "what do you do with SS if something goes wrong?"
 ---
 ## What is Treason?
@@ -157,32 +158,10 @@ In Treason, we get autocomplete even when the expression at your cursor is missi
 If we were in a language without macros, we could avoid doing the identifier insertion and we could just check what's in scope at the surrounding form. But hygienic macros require this kind of thing to get hygienic autocomplete right in general.
 ## Limitations
 Treason helps give us IDE services in some situations where languages like Racket do not. However, there are some limitations and drawbacks to the approach we took, as well as features that just haven't been implemented yet.
-### SSE leads to expansion in the wrong context
-One important drawback with fault-tolerance is that expansion can happen on invalid programs and in unexpected contexts, which can cause unexpected behavior. For example,
-![Pasted image 20260529093204.png](Pasted%20image%2020260529093204.png)
-In this example of SSE, the body of the `my-let` expands to get services on it, even though the binding group is invalid. This body is a reference to the improperly-bound `x`. Since this binding was never registered, it looks like `x` is unbound, so we get a somewhat confusing error. This could be alleviated by saying something like "unbound identifier inside of a misuse of a macro, which may be the real problem". But in general, having expressions expand outside of the proper context can cause even more unexpected behavior. We may want to add some hooks to allow macro authors to disable SSE in certain situations to prevent this.
-### Side Effects
-Another unfortunate interaction with macro side effects is autocomplete. For example,
-![Pasted image 20260529093929.png](Pasted%20image%2020260529093929.png)
-Here, we get `x` in autocomplete despite the `let` missing its body. In the case where the user's cursor is not in an existing identifier, we achieve by inserting a special identifier where the cursor is, expanding the program, and seeing what names were in scope when the cursor identifier was resolved. When we do this, we must re-expand the entire program, which is both inefficient and could lead to extra side effects during expansion.
-In general, the goals of treason do have some friction with effect-ful macros, and this is still an open problem.
-Efficiency is a limitation here. We will keep expanding when we see an error, which could waste time trying to expand a garbage program, and we re-expand for autocomplete in some situations. We also re-parse and re-expand the entire program on every edit. We could do tree-sitter for incremental parsing and something like salsa for incremental expansion, but we haven't tried that yet.
-### Fault-tolerant Reading
-One other thing that hasn't been implemented yet is fault-tolerant reading. When we process a treason file, we first "read" it by parsing it into s-expressions, and then we treat this s-expression as the surface syntax of a program when we expand it. Expansion is fault-tolerant and continues after errors, but reading is currently not fault-tolerant. For example, if we have an unexpected close-paren, parsing immediately gives up and expansion never happens. We could use indentation to infer where parentheses should be and return a sentinel node on parse failure, but that hasn't been implemented yet.
-### Procedural Macros
-We also haven't implemented procedural macros, which could get messy for a few reasons. Right now, our pattern-based macro language is baked into the compiler and the annotations that power SSE are similarly baked in. To support procedural macros, we'd want to expose hooks to allow macro authors to control spec-driven subexpression expansion. Procedural macro authors would also have to account for the possibility of sentinel nodes being present in partially expanded code if we support an operator like `local-expand`. And as we've discussed, authors of macros with side effects must account for fault-tolerant expansion and potential expansion of prospective programs like the case of cursor-insertion autocomplete. In general, increased availability of IDE services seems to have the drawback of increased burden on macro authors. We are trying to design treason to minimize these burdens, but there is definitely more friction than in a language without fault-tolerant expansion.
-### Recursive Macros
-Another limitation with the current implementation is that recursive macros don't work as well with fault-tolerance and SSE, so whether a user gets IDE services in a region of a program currently depends on how the macros are implemented internally. For example,
-![Pasted image 20260529100314.png](Pasted%20image%2020260529100314.png)
-Here we have a recursive implementation of `let*`. We recur on the sequence of binding pairs. In the recursive case, we only declare that the first binding pair must be a pair, and we rely on recursion to enforce the structure of the rest of the binding pairs. However, the recursive case is only invoked when the initial pattern succeeds to match since it relies on expanding the generated recursive call. In our case, the recursive pattern fails to match since the binding group is empty, and we never "look inside" of the other binding pair, so we never realize that the second expression should be expanded, and we get no services on the right-hand-side of the `x` binding. We can alleviate this by creating a more precise pattern:
-![Pasted image 20260529101805.png](Pasted%20image%2020260529101805.png)
-Now we get services on the second binding pair.
-When writing macros, it is best to validate syntax as early as possible with precise patterns to get the most precise error messages. This is not only true in Treason, but also in Racket with `syntax/parse` as well.
-### Services in templates require use
-We get services in templates, but only when the macro is used. Without having the template expand, there is currently no way to know which variables end up as definitions and references. With something like syntax-spec, we could get these services without having to expand.
 
-### Single-file (no modules)
-There is no module system, so programs are only a single standalone file. However, I imagine our approach will generalize to a language with multiple modules without significant challenges.
+- SSE leads to expansion in the wrong context. Since we're expanding subexpressions under the context of the whole macro use, there may be missing variable bindings from inside the use, syntax parameters, etc. This could lead to unexpected behavior and potentially incorrect behavior with side effects. We could add a mechanism for macro authors to disable SSE for a macro, and annotations of binding rules like in syntax-spec could help us infer context.
+- Lots of re-expansions: We re-expand the whole program on every edit, and usually on each autocomplete request. This is inefficient and could cause unexpected behavior with side effects.
+- recursive macros are a bit awkward, especially with SSE. Whether SSE happens can depend on how your macro is implemented. This is also a limitation in `syntax/parse`, and can be somewhat alleviated with more thorough annotation/guarding in patterns.
 ## Open questions
 - progress like syntax parse?
 - how to deal with side effects?
@@ -202,3 +181,6 @@ There is no module system, so programs are only a single standalone file. Howeve
 	- local expand would get weird with sentinels
 	- phasing
 - hash lang for racket interop
+- fault-tolerant reading
+- smarter subexpression blame: using "recovery tokens" to distinguish between bad subexpression, missing subexpression, and extra subexpression, or generally "realign" in the face of extra/missing so we can get more accurate errors and SSE.
+  - we may want to implement a mechanism different from syntax/parse progress, which is prefix-centric, to determine which clause is the "most correct", perhaps something based on this recover token idea
