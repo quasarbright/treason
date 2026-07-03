@@ -168,10 +168,6 @@ Treason helps give us IDE services in some situations where languages like Racke
 - could any of this be retrofitted to Racket?
 	- basic fault tolerance maybe could. like add an optional flag to enable fault-tolerant local-expand? valid programs would have no behavioral change, only invalid ones.
 ## Future work
-- syntax spec to get even more services and static information
-	- no more use requirement for template services
-	- can do SSE-like thing with bindings like in `(my-let ([x]) HERE)` getting `x` in auto-complete despite invalid binding group
-	- way less of a need to expand to get services
 - procedural macros
 	- side effects
 	- procedural hook for SSE and creating an error sentinel
@@ -184,3 +180,23 @@ Treason helps give us IDE services in some situations where languages like Racke
 - fault-tolerant reading
 - smarter subexpression blame: using "recovery tokens" to distinguish between bad subexpression, missing subexpression, and extra subexpression, or generally "realign" in the face of extra/missing so we can get more accurate errors and SSE.
   - we may want to implement a mechanism different from syntax/parse progress, which is prefix-centric, to determine which clause is the "most correct", perhaps something based on this recover token idea
+- syntax spec to get even more services and static information
+	- no more use requirement for template services
+	- can do SSE-like thing with bindings like in `(my-let ([x]) HERE)` getting `x` in auto-complete despite invalid binding group
+	- way less of a need to expand to get services
+
+## syntax-spec example
+
+let's say you have a PEG parsers DSL
+
+```racket
+(struct addition [l r])
+(define-peg add-expr
+  (=> (seq (bind l) "+" (bind r num-expr)) ; forgot to bind l to num-expr
+      ; this is a racket/treason expression
+      (addition l r))))
+```
+
+A DSL like PEG parsers can be implemented as a single big macro. But if we do that, then there is no way to get services on the DSL fragments. Here, we might get SSE on the `(addition l r)` but there's no way we'd get it on the `(bind r num-expr)`, so `num-expr` wouldn't be recorded as a reference and `l` and `r` would appear unbound in `(addition l r)` since the binding never happened.
+
+However, since syntax-spec allows us to annotate grammar and binding rules for our DSL, we can use this extra static information to inform more precise SSE. We'd know that `l` and `r` should be bound in `(addition l r)` even without being able to expand the template/compilation of our DSL, allowing us to get IDE services in even more cases of bad syntax.
