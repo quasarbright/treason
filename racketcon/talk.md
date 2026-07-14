@@ -159,31 +159,15 @@ If we were in a language without macros, we could avoid doing the identifier ins
 ## Limitations
 Treason helps give us IDE services in some situations where languages like Racket do not. However, there are some limitations and drawbacks to the approach we took, as well as features that just haven't been implemented yet.
 
-- SSE leads to expansion in the wrong context. Since we're expanding subexpressions under the context of the whole macro use, there may be missing variable bindings from inside the use, syntax parameters, etc. This could lead to unexpected behavior and potentially incorrect behavior with side effects. We could add a mechanism for macro authors to disable SSE for a macro, and annotations of binding rules like in syntax-spec could help us infer context.
-- Lots of re-expansions: We re-expand the whole program on every edit, and usually on each autocomplete request. This is inefficient and could cause unexpected behavior with side effects.
-- recursive macros are a bit awkward, especially with SSE. Whether SSE happens can depend on how your macro is implemented. This is also a limitation in `syntax/parse`, and can be somewhat alleviated with more thorough annotation/guarding in patterns.
-## Open questions
-- progress like syntax parse?
-- how to deal with side effects?
-- could any of this be retrofitted to Racket?
-	- basic fault tolerance maybe could. like add an optional flag to enable fault-tolerant local-expand? valid programs would have no behavioral change, only invalid ones.
-## Future work
-- procedural macros
-	- side effects
-	- procedural hook for SSE and creating an error sentinel
-	- to bootstrap, need something like syntax-local-value and a sophisticated reflected environment for ellipses and quote
-		- syntax-local-value successful lookup registers a reference with LSP. include success predicate for whether to record reference, like binding class predicate if the lookup is looking for a particular type of variable.
-	- quotes and quasiquotes
-	- local expand would get weird with sentinels
-	- phasing
-- hash lang for racket interop
+- SSE leads to expansion in an incomplete context. Since we're expanding subexpressions under the context of the whole macro use, there may be missing variable bindings from inside the use, syntax parameters, etc. This could lead to unexpected behavior and potentially incorrect behavior with side effects. We could add a mechanism for macro authors to disable SSE for a macro, and annotations of binding rules like in syntax-spec could help us infer context.
+- Recursive macros must be written in a specific style where the complete syntax is validated on the first expansion for SSE to work properly. The same applies to `syntax/parse` though, which only produces good error messages for recursive macros when they follow this style.
+- smarter subexpression blame: when macros have missing or extra subexpressions, SSE can get "misaligned" and the wrong subexpression can get expanded
+  - we may want to implement a mechanism different from syntax/parse progress to determine which clause is the "most correct", possibly "realigning" at references of datum literals to recover from missing/extra subexpressions.
+## Open questions and future work
+- adding support for procedural macros. how to deal with side effects?
 - fault-tolerant reading
-- smarter subexpression blame: using "recovery tokens" to distinguish between bad subexpression, missing subexpression, and extra subexpression, or generally "realign" in the face of extra/missing so we can get more accurate errors and SSE.
-  - we may want to implement a mechanism different from syntax/parse progress, which is prefix-centric, to determine which clause is the "most correct", perhaps something based on this recover token idea
-- syntax spec to get even more services and static information
-	- no more use requirement for template services
-	- can do SSE-like thing with bindings like in `(my-let ([x]) HERE)` getting `x` in auto-complete despite invalid binding group
-	- way less of a need to expand to get services
+- incremental/lazy re-expansion on edits in the language server
+- syntax-spec integration
 
 ## syntax-spec example
 
@@ -191,12 +175,26 @@ let's say you have a PEG parsers DSL
 
 ```racket
 (struct addition [l r])
+;; parses "1+2" as (addition 1 2)
+(define-peg add-expr
+  (=> (seq (bind l num-expr) "+" (bind r num-expr))
+      ; this is a racket/treason expression
+      (addition l r)))
+```
+
+now what if there's a mistake?
+
+```racket
+(struct addition [l r])
+;; parses "1+2" as (addition 1 2)
 (define-peg add-expr
   (=> (seq (bind l) "+" (bind r num-expr)) ; forgot to bind l to num-expr
       ; this is a racket/treason expression
-      (addition l r))))
+      (addition l r)))
 ```
 
-A DSL like PEG parsers can be implemented as a single big macro. But if we do that, then there is no way to get services on the DSL fragments. Here, we might get SSE on the `(addition l r)` but there's no way we'd get it on the `(bind r num-expr)`, so `num-expr` wouldn't be recorded as a reference and `l` and `r` would appear unbound in `(addition l r)` since the binding never happened.
+> use colors to distinguish PEG from racket/treason to make it clear for those unfamiliar
 
-However, since syntax-spec allows us to annotate grammar and binding rules for our DSL, we can use this extra static information to inform more precise SSE. We'd know that `l` and `r` should be bound in `(addition l r)` even without being able to expand the template/compilation of our DSL, allowing us to get IDE services in even more cases of bad syntax.
+If your entire program is a DSL fragment that's one big macro use, any error in the use will ruin fault-tolerance since the macro is mostly opaque. There is no way for the expander to know the binding rules and grammar of your custom DSL forms, so the best we can do is expand some treason `expr`s like `(addition l r)` in a very incomplete context, which isn't helpful.
+
+However, if we allow users to declare binding rules and grammar for their DSL forms, we can bring the benefits of fault-tolerance and SSE into DSLs like this one. In this example, we'd know that `bind` binds a variable and makes it available in the body of the `=>` so we'd know that `l` and `r` are bound in `(addition l r)`.
