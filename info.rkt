@@ -2,6 +2,8 @@
 (define collection "treason")
 (define deps '("base" "rackunit-lib" "rackcheck" "errortrace-lib"))
 (define build-deps '("scribble-lib" "racket-doc"))
+(define compile-omit-paths '(#px"racketcon/*"))
+(define test-omit-paths '(#px"racketcon/*"))
 (define scribblings '(("scribblings/treason.scrbl" ())))
 (define pkg-desc "Description Here")
 (define version "0.0")

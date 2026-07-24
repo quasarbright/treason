@@ -198,3 +198,18 @@ now what if there's a mistake?
 If your entire program is a DSL fragment that's one big macro use, any error in the use will ruin fault-tolerance since the macro is mostly opaque. There is no way for the expander to know the binding rules and grammar of your custom DSL forms, so the best we can do is expand some treason `expr`s like `(addition l r)` in a very incomplete context, which isn't helpful.
 
 However, if we allow users to declare binding rules and grammar for their DSL forms, we can bring the benefits of fault-tolerance and SSE into DSLs like this one. In this example, we'd know that `bind` binds a variable and makes it available in the body of the `=>` so we'd know that `l` and `r` are bound in `(addition l r)`.
+
+
+
+--- 
+
+notes with michael going over slides
+
+- [x] racket actually doesn't give you services on stuff "up to" the error without caching since the lsp relies on examining the expanded program. sometimes it seems like you get partial services when the LSP has static info cached from a previous, successfully expanding version of the program.
+- [x] make first slide a visual example? like define x y z but in racket and it doesn't work. literally no autocomplete without caching
+- [ ] before showing examples, say that when there's an error, you get bad services. then claim that most of the time, you do have an error. then transition into those common error example slides
+- [ ] establish that you're going to do better than rust early on. like in the rust bad use example say you'll do better
+- [ ] give talk outline before anything, mention you're actually contributing something new, give talk outline (include text on slide)
+- [ ] put the cursor there on the define x y z example so it's clearer
+- [x] make sentinel visual a red square or something
+- [ ] to motivate why sse is hard, say "you can't expand a bad use so you get no info on what it was supposed to be". don't do the naive attempt with holes.
