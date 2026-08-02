@@ -27,7 +27,7 @@ Here's another one. Like good htdp students, we write our functions top-down. He
 
 **▶ A Tradeoff?**
 
-Surely, this is unavoidable. You have opaque macros and you can extend the language however you want, so of course the IDE can't know as much about your programs. You can't have a language as expressive as Racket AND also get good IDE services. Right?
+Surely, this is unavoidable. You can extend the language however you want, so of course the IDE can't know as much about your programs. You can't have a language with macros AND also get good IDE services. Right?
 
 Actually, you can. 
 
@@ -37,7 +37,7 @@ Other languages with macros like Rust already have better IDE services than Rack
 
 **Macro example**
 
-Here is an example of a macro in rust that allows you to write a json map with nice syntax. Let's zoom in on the use. We have an arrow in between each field name and value. If we write those arrows wrong, we get a syntax error. But only the first error! What happened? I thought rust never gave up?
+Here is an example of a macro in rust that allows you to write a json map with nice syntax. We have an arrow in between each field name and value. But if we pull that status out into a variable and try to type it into the macro, we don't get autocomplete. And if we write those arrows wrong, we get a syntax error. But only the first error! What happened? I thought Rust had good IDE services and never gave up?
 
 **▶ But Not Rust Macros (why)**
 
@@ -45,7 +45,7 @@ What's going on here is, plain Rust works well because the compiler knows Rust's
 
 **▶ The fix**
 
-So the fix has three parts. The first part is to accumulate static information as we expand so even if expansion fails, we can still get partial services. We also want to just keep expanding after errors so we get information on as much of the file as possible, which is easy. To do better than Rust, we'll have to somehow extend this fault tolerance to within a bad macro use, which is the hard part. That's the main novel contribution of Treason, and we'll do it by giving the expander more knowledge about the internal grammar of a macro. Speaking of which, let's see Treason!
+What we need is some way to help the expander understand your macro's static semantics by making is less opaque. If we look at pattern-based macros, there is plenty of information just begging to be used by the expander. The pattern gives you a rough idea of the grammar, and if you use syntax-parse, you're probably already used to annotating pattern variables with syntax classes, which gives us even more information about the grammar. In Racket, this is pretty much only used for producing good error messages. But if we make the most of these annotations, we can use them to get services even in a bad macro use. This is the main novel contribution of Treason.
 
 **▶ What is Treason?**
 
@@ -61,9 +61,9 @@ We can take this even further. The outer `my-let` here has a malformed binding g
 
 **▶ Demo: Services in a Template**
 
-One more nice little thing is that we get services inside the template of a macro definition. Here I'm running autocomplete in the template of the macro. Autocomplete suggests the pattern variables `m` and `p`, which you'd expect, but it also has `x`, which is a binding introduced by the macro template itself. So our IDE services understand the pattern variables that are available, and the structure of the code the template generates. And again, all of this happens even in an empty `let` body in the template.
+One more nice little thing is that we get services inside the template of a macro definition. Here I'm running autocomplete in the template of the macro. Autocomplete suggests the pattern variable `p`, which you'd expect, but it also has `x`, which is a binding introduced by the macro template itself. So our IDE services understand the pattern variables that are available, and the structure of the code the template generates. And again, all of this happens even in an empty `let` body in the template.
 
-Alright, now how is this all possible?
+Alright, now how does this all work?
 
 **▶ Where Do the Services Come From?**
 

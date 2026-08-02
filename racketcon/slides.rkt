@@ -52,6 +52,29 @@
           (- (+ padding 10)))
    p))
 
+;; annotate-box : scene target -> scene
+;; outline box over target, drawn without changing the scene's layout
+(define (annotate-box scene target #:color [c "orange"] #:pad [pad 3])
+  (define-values (x y) (lt-find scene target))
+  (pin-over scene (- x pad) (- y pad)
+            (frame (blank (+ (pict-width target) (* 2 pad))
+                          (+ (pict-height target) (* 2 pad)))
+                   #:color c #:line-width 3)))
+
+;; annotate-fill : scene (or target (listof target)) -> scene
+;; color fill behind each target, drawn without changing the scene's layout
+(define (annotate-fill scene target-or-targets #:color [c (light (light "blue"))] #:pad [pad 2])
+  (for/fold ([scene scene])
+            ([target (if (list? target-or-targets) target-or-targets (list target-or-targets))])
+    (define-values (x y) (lt-find scene target))
+    (pin-under scene (- x pad) (- y pad)
+               (filled-rectangle (+ (pict-width target) (* 2 pad))
+                                 (+ (pict-height target) (* 2 pad))
+                                 #:color c #:draw-border? #f))))
+
+;; ANNOT-COLOR : the fill used to highlight a `~var` annotation
+(define ANNOT-COLOR (light (light "green")))
+
 (slide
  (titlet "Treason: Making Macros and IDE Services Work Together")
  (titlet "Mike Delmonaco"))
@@ -71,7 +94,7 @@
 (slide
  #:title "Racket's Poor IDE Experience"
  (img "racket-no-auto.png")
- (item "Services not available when there is an error (which is most of the time)")
+ (item "Services like autocomplete not available when there is an error (which is most of the time)")
  (item "Only shows the first error"))
 
 (define mag-last (code (define mag-sq (+ x2 y2))))
@@ -137,38 +160,57 @@
 ;; ---------------------------------------------------------------------------
 
 (slide
- #:title "Other Languages Keep Going"
+ #:title "Rust keeps going"
  (t "Rust has macros, and doesn't quit on the first error.")
  (t "You even get autocomplete on the broken definitions.")
  (img "Pasted image 20260610201130.png" 760 360))
 
 (slide
- #:title "Other Languages Keep Going"
- (img "rust-macro-good.png" 600 470))
-
-(slide
- #:title "Other Languages Keep Going"
+ #:title "Bad services inside of Rust macros"
+ (para #:align 'center (code json_map!) "is a macro we defined")
  (img "rust-macro-good-use.png" 800 550)
- (para #:align 'center "Uses" (code =>) "as a separator"))
+ (para #:align 'center "Uses" (code =>) "as a separator")
+ )
 
 (slide
- #:title "Other Languages Keep Going"
- (img "rust-macro-bad-use.png" 700 550)
+ #:title "Bad services inside of Rust macros"
+ (img "rust-no-auto-in-macro.png" 800 550)
+ (para #:align 'center "No autocomplete in a macro use")
+ )
+
+(slide
+ #:title "Bad services inside of Rust macros"
+ (img "rust-macro-bad-use.png" 800 550)
  (t "Only the first error inside of a bad use"))
 
 (slide
- #:title "Other Languages Keep Going"
+ #:title "Bad services inside of Rust macros"
  (para "Error recovery in plain Rust works because the compiler knows the grammar and can guess what you meant.")
  (blank 15)
  (item "Macros are opaque syntax-to-syntax transformations")
  (item "Macros are not built to be fault-tolerant")
  (item "But in Racket, everything is a macro!"))
 
+(define fix-annot (code (~var body expr)))
+(define fix-code
+  (annotate-fill
+   (code
+    (define-syntax my-define
+      (syntax-rules ()
+        [(my-define (f x ...)
+           #,fix-annot ...)
+         (define f
+           (lambda (x ...)
+             (block body ...)))])))
+   fix-annot #:color ANNOT-COLOR))
+
 (slide
  #:title "The Fix"
- (item "Accumulate static information as you expand")
- (item "Keep going after errors")
- (item "Retain services inside a bad macro use by making macros less opaque"))
+ (t "Retain services inside a bad macro use by making macros less opaque")
+ (blank 15)
+ fix-code
+ (blank 15)
+ (t "Leverage annotations!"))
 
 ;; ---------------------------------------------------------------------------
 ;; Treason: what it looks like
@@ -205,26 +247,6 @@
 ;; ---------------------------------------------------------------------------
 ;; How expansion gives rise to IDE services
 ;; ---------------------------------------------------------------------------
-
-;; annotate-box : scene target -> scene
-;; outline box over target, drawn without changing the scene's layout
-(define (annotate-box scene target #:color [c "orange"] #:pad [pad 3])
-  (define-values (x y) (lt-find scene target))
-  (pin-over scene (- x pad) (- y pad)
-            (frame (blank (+ (pict-width target) (* 2 pad))
-                          (+ (pict-height target) (* 2 pad)))
-                   #:color c #:line-width 3)))
-
-;; annotate-fill : scene (or target (listof target)) -> scene
-;; color fill behind each target, drawn without changing the scene's layout
-(define (annotate-fill scene target-or-targets #:color [c (light (light "blue"))] #:pad [pad 2])
-  (for/fold ([scene scene])
-            ([target (if (list? target-or-targets) target-or-targets (list target-or-targets))])
-    (define-values (x y) (lt-find scene target))
-    (pin-under scene (- x pad) (- y pad)
-               (filled-rectangle (+ (pict-width target) (* 2 pad))
-                                 (+ (pict-height target) (* 2 pad))
-                                 #:color c #:draw-border? #f))))
 
 ;; the walkthrough program, with the two x occurrences as grabbable sub-picts
 ;; so we can box / highlight them (no arrows)
@@ -370,8 +392,11 @@
  (code
   (define-syntax my-define
     (syntax-rules ()
-      [(my-define (f x ...) (~var body expr) ...)
-       (define f (lambda (x ...) (block body ...)))]))
+      [(my-define (f x ...)
+         (~var body expr) ...)
+       (define f
+         (lambda (x ...)
+           (block body ...)))]))
   code:blank
   (my-define #,(framed-code ())
     (sqrt (+ (sqr x) (sqr y)))))
@@ -386,12 +411,15 @@
    (code
     (define-syntax my-define
       (syntax-rules ()
-        [(my-define (f x ...) #,sse-annot ...)
-         (define f (lambda (x ...) (block body ...)))]))
+        [(my-define (f x ...)
+           #,sse-annot ...)
+         (define f
+           (lambda (x ...)
+             (block body ...)))]))
     code:blank
     (my-define ()
       #,sse-body))
-   (list sse-annot sse-body) #:color (light (light "green"))))
+   (list sse-annot sse-body) #:color ANNOT-COLOR))
 
 (slide
  #:title "Spec-Driven Subexpression Expansion"
@@ -498,8 +526,7 @@
 (define (ln p) (hbl-append p (t " (line 3)")))
 (define tmpl-headers (list (bt "reference") (bt "resolves to") (bt "in scope")))
 (define tmpl-row1
-  (list (ln (code x)) (t "nothing (macro-introduced)")
-        (hbl-append (code m) (t ", ") (code p))))
+  (list (ln (code x)) (t "nothing (macro-introduced)") (code p)))
 (define tmpl-row2
   (list (ln (code _cursor1234)) (ln (code x)) (ln (code x))))
 (define (tmpl-table . rows)

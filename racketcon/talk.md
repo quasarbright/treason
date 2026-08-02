@@ -207,9 +207,18 @@ notes with michael going over slides
 
 - [x] racket actually doesn't give you services on stuff "up to" the error without caching since the lsp relies on examining the expanded program. sometimes it seems like you get partial services when the LSP has static info cached from a previous, successfully expanding version of the program.
 - [x] make first slide a visual example? like define x y z but in racket and it doesn't work. literally no autocomplete without caching
-- [ ] before showing examples, say that when there's an error, you get bad services. then claim that most of the time, you do have an error. then transition into those common error example slides
-- [ ] establish that you're going to do better than rust early on. like in the rust bad use example say you'll do better
-- [ ] give talk outline before anything, mention you're actually contributing something new, give talk outline (include text on slide)
-- [ ] put the cursor there on the define x y z example so it's clearer
+- [x] before showing examples, say that when there's an error, you get bad services. then claim that most of the time, you do have an error. then transition into those common error example slides
+- [x] establish that you're going to do better than rust early on. like in the rust bad use example say you'll do better
+- [x] give talk outline before anything, mention you're actually contributing something new, give talk outline (include text on slide)
+- [x] put the cursor there on the define x y z example so it's clearer
 - [x] make sentinel visual a red square or something
-- [ ] to motivate why sse is hard, say "you can't expand a bad use so you get no info on what it was supposed to be". don't do the naive attempt with holes.
+- [x] to motivate why sse is hard, say "you can't expand a bad use so you get no info on what it was supposed to be". don't do the naive attempt with holes.
+
+
+- [x] don't even show the definition of json-map!. just make it clear that it's a macro that we defined
+- [x] highlight the annotation in the fix slide
+- [x] update script for slides changes
+- [ ] be more explicit and clear about how when we're in the template resolving `x`, we are only checking for pattern variable bindings.
+- [ ] in the services in template stuff, m should not be in scope. underscore it in the pattern. fix the bug and redo the screenshot too https://github.com/quasarbright/treason/issues/65
+- [ ] make macro-use vs introduced more obvious in the services in template autocomplete example with color. also make the thing we're expanding `(let ([y 2]) (m 1))` and emphasize that `y` is not in scope for cursor due to hygiene
+- [ ] finish. slides aren't done and script isn't done, even for some done slides
