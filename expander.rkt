@@ -333,7 +333,7 @@
              (define scp^ (new-scope scp))
              (define m-binding (macro-binding mname-stx macrot-stx scp))
              (scope-bind! scp^ mname-stx m-binding)
-             (record-all-pvar-resolutions-for-macrot! macrot-stx scp)
+             (record-all-pvar-resolutions-for-macrot! macrot-stx)
              (expand-expr body scp^)]
             ;; optimistic sub-expression expansion
             [(stx-quote (let-syntax ,bg ,body))
@@ -411,7 +411,7 @@
                (raise-and-record-stx-error (stx-error 'define-syntax "bad syntax" def var-stx)))
              (define m-binding (macro-binding var-stx macrot-stx scp))
              (scope-bind! scp var-stx m-binding)
-             (record-all-pvar-resolutions-for-macrot! macrot-stx scp)
+             (record-all-pvar-resolutions-for-macrot! macrot-stx)
              `(begin)]
             [_ (raise-and-record-stx-error (stx-error 'define-syntax "bad syntax" def #f))]))]
        ;; begin
@@ -573,30 +573,38 @@
 ;; Pattern Variable LSP Resolution
 ;; ============================================================
 
-;; record-all-pvar-resolutions-for-macrot! : Syntax Scope -> Void
+;; record-all-pvar-resolutions-for-macrot! : Syntax -> Void
 ;; Eagerly records LSP pvar resolutions for every clause in a syntax-rules transformer.
 ;; Called at let-syntax/define-syntax expansion time so that goto-definition,
 ;; find-references, and autocomplete work on pattern variables even if the macro
 ;; is never applied.
-(define (record-all-pvar-resolutions-for-macrot! macrot def-scp)
+(define (record-all-pvar-resolutions-for-macrot! macrot)
   (match macrot
     [(stx-quote (,_syntax-rules (,literal-ids ...) ,clauses ...))
      (define is-literal? (make-is-datum-literal? literal-ids))
      (for ([clause clauses])
        (match clause
          [(stx-quote [,pat ,tmpl])
-          (define pvar-scp (build-pvar-scope pat is-literal? def-scp))
+          (define pvar-scp (build-pvar-scope pat is-literal?))
           (record-pvar-resolutions! tmpl pvar-scp)]))]))
 
-;; build-pvar-scope : Pattern (Id -> Bool) Scope -> Scope
+;; build-pvar-scope : Pattern (Id -> Bool) -> Scope
 ;; Builds a scope containing a pattern-variable-binding for each pvar in the pattern.
 ;; Also records each pvar as a binding site so goto-definition works even if the pvar
 ;; is never referenced in the template.
-;; The scope's parent is def-scp so autocomplete traversal includes definition-site names.
+;; The scope has no parent: a template is only scanned for pattern variables, since
+;; at definition time we can't tell a macro-introduced reference from a binding
+;; position. Use-site expansion analyzes macro-introduced identifiers instead.
+;; The pattern head is skipped, matching match-top-pattern, which ignores it.
 ;; The wildcard _ is excluded since it is never referenced in templates.
-(define (build-pvar-scope pat is-literal? def-scp)
-  (define scp (scope def-scp (make-hash)))
-  (let loop ([p pat])
+(define (build-pvar-scope pat is-literal?)
+  (define scp (scope (core-scope (hash)) (make-hash)))
+  ;; the head names the macro, so only the arguments after it can be pvars
+  (define pat-args
+    (match pat
+      [(stx-quote (,_head . ,rest)) rest]
+      [_ '()]))
+  (let loop ([p pat-args])
     (match p
       [(? identifier? id)
        (unless (or (is-literal? id) (eq? (identifier-symbol id) '_) (eq? (identifier-symbol id) '...))

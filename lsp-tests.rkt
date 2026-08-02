@@ -233,6 +233,33 @@
     (goto-definition source (find-position source "q" 0))
     (list (hash 'uri test-uri 'range (find-range source "q" 0)))))
 
+  ;; 12. Template scanning only considers pattern variables (issue #65)
+  ;; Scanning a template at macro-definition time can't tell a reference from a
+  ;; binding position, so definition-site names must not be offered there. Only
+  ;; pattern variables are. Use-site expansion handles macro-introduced names.
+  (test-case
+   "pvar: autocomplete in a template offers only pattern variables"
+   ;; zzz sits in a let binding position in the template. foo is a definition-site
+   ;; binding and m is the macro being defined; neither belongs in the completions.
+   (define source "(define foo 1) (define-syntax m (syntax-rules () [(m p) (let ([zzz p]) 1)]))")
+   (check-equal?
+    (autocomplete source (find-position source "zzz"))
+    (list (hasheq 'label "p"))))
+
+  ;; 13. The pattern head is not a pattern variable (issue #65)
+  ;; syntax-rules ignores the head of a pattern when matching, so it must not be
+  ;; bound as a pvar either.
+  ;; Index guide for "(let-syntax ([m (syntax-rules () [(m q) 42])]) 1)":
+  ;;   m0 (char 13): the macro binding
+  ;;   m1 (char 34): the pattern head in (m q)
+  (test-case
+   "pvar: pattern head is not bound as a pattern variable"
+   (define source "(let-syntax ([m (syntax-rules () [(m q) 42])]) 1)")
+   ;; m1 is not a binding site, so there is nowhere to go
+   (check-equal?
+    (goto-definition source (find-position source "m" 1))
+    (list)))
+
   ;; ============================================================
   ;; Goto-definition tests for each binding form
   ;; ============================================================
