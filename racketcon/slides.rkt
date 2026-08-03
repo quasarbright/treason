@@ -499,13 +499,13 @@
 
 ;; two program states, same line count so the layout never shifts:
 ;; A shows the use (m y); B shows it replaced by the instantiated template.
-(define tmpl-x (code x))
+(define tmpl-def-cur (code _cursor1234))
 (define tmpl-call (code (m 1)))
 (define tmpl-prog-A
   (code
    (define-syntax m
      (syntax-rules ()
-       [(m p) (let ([#,tmpl-x p]) _cursor1234)]))
+       [(m p) (let ([x p]) #,tmpl-def-cur)]))
    code:blank
    #,tmpl-call))
 (define tmpl-use-cur (code _cursor1234))
@@ -525,10 +525,12 @@
 ;; ln : pict -> pict   tag a table cell with its source line
 (define (ln p) (hbl-append p (t " (line 3)")))
 (define tmpl-headers (list (bt "reference") (bt "resolves to") (bt "in scope")))
+;; the same cursor gets resolved twice — once in the definition, once in the use
 (define tmpl-row1
-  (list (ln (code x)) (t "nothing (macro-introduced)") (code p)))
+  (list (ln (code _cursor1234)) (t "nothing (unbound)") (code p)))
 (define tmpl-row2
-  (list (ln (code _cursor1234)) (ln (code x)) (ln (code x))))
+  (list (ln (code _cursor1234)) (t "nothing (unbound)")
+        (hbl-append (code x) (t ", ") (code m))))
 (define (tmpl-table . rows)
   (table 3 (append tmpl-headers (apply append rows))
          lc-superimpose cc-superimpose 40 10))
@@ -544,20 +546,20 @@
 
 (tmpl-slide
  (cap "Insert a cursor" (code _cursor1234) "in the template body, then"
-      "expand. Watch the table fill in.")
+      "expand.")
  tmpl-prog-A
  (tmpl-table))
 
 (tmpl-slide
- (cap "First we expand the definition. The template has no binding structure"
-      "yet, so" (code x) "is treated as a reference.")
- (annotate-box tmpl-prog-A tmpl-x)
+ (cap "First we expand the definition, and reach the cursor sitting in the"
+      "template.")
+ (annotate-box tmpl-prog-A tmpl-def-cur)
  (tmpl-table))
 
 (tmpl-slide
- (cap "A template variable resolves to a pattern variable, or to nothing if"
-      "it's macro-introduced." (code x) "is macro-introduced, so: nothing.")
- (annotate-box tmpl-prog-A tmpl-x)
+ (cap "Scanning a template, the only names we know are the pattern variables."
+      "So all we learn here is that" (code p) "is in scope.")
+ (annotate-box tmpl-prog-A tmpl-def-cur)
  (tmpl-table tmpl-row1))
 
 (tmpl-slide
@@ -566,18 +568,18 @@
  (tmpl-table tmpl-row1))
 
 (tmpl-slide
- (cap "Expanding it," (code (m 1)) "is replaced by the template body, with"
-      (code p) "filled in as" (codep 1 "."))
+ (cap "Expanding it, we get another instance of the cursor identifier.")
  (annotate-box tmpl-prog-B tmpl-use-expansion)
  (tmpl-table tmpl-row1))
 
 (tmpl-slide
- (cap "We reach the cursor in the expanded use. Now" (code x) "is in scope.")
+ (cap "When resolving it again," (code x) "is in scope.")
  (annotate-box tmpl-prog-B tmpl-use-cur)
  (tmpl-table tmpl-row1))
 
 (tmpl-slide
- (cap "The cursor resolves to the" (code x) "on line 3.")
+ (cap "One reference, two resolutions. Autocomplete takes the union of what"
+      "was in scope for each:" (codep m ",") (codep p ",") (codep x "."))
  (annotate-box tmpl-prog-B tmpl-use-cur)
  (tmpl-table tmpl-row1 tmpl-row2))
 

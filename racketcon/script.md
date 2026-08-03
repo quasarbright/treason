@@ -109,37 +109,13 @@ And again, hygiene makes this a little more complicated, but that's the main ide
 
 One last nice thing treason gives us is services in macro templates. Here we see that `p` is in scope, which is expected since it's a pattern variable, but also `x` which is bound in the macro-introduced code. We actually get this pretty much for free since we track resolutions as we expand.
 
-Again, since this the service we're using is autocomplete, we insert a bogus cursor identifier. When the expander is going through the definition of the macro, we'll try to resolve `x` in the template just to see if it resolves to a pattern variable, and it doesn't, so we know it's a macro-introduced identifier in the template. But like any other resolution, we keep track 
+Again, since this the service we're using is autocomplete, we insert a bogus cursor identifier. When the expander is going through the definition of the macro, we'll try to resolve the cursor identifier in the template just to see if it resolves to a pattern variable. and it doesn't, so we know it's a macro-introduced identifier in the template. But like any other resolution, we keep track of what was in scope. Then we end up expanding the use, and in there we end up expanding the macro-introduced cursor identifier once again. When resolving this macro-introduced cursor identifier, the macro-introduced binding `x` is in scope. Now we have 2 resolutions of the same identifier, which is something that happens when macros are involved. When this happens, autocomplete gives us the union of names in scope from all the resolutions.
 
-Now here's a nice payoff of all this. We get services inside the template of a macro definition. Let me walk through how. Here's a macro `m`, and I've inserted a cursor identifier, `_cursor1234`, right in the body of the template's `let`. And down here there's a use, `(m 1)`. Watch the resolution table fill in as we expand.
+One nice thing is that this didn't really have to be baked into treason. By just recording information from resolutions as we expand, we naturally get services in templates from the expansion of macro uses.
 
-**▶ Services in Templates (reference)**
+One limitation of this is that it only works when your macro has a use. But if we're good htdp students so we're writing uses of our macros before we implement, right everybody?
 
-First we expand the definition. Now, the template on line 3 has no binding structure yet. It's just syntax. So even though `x` looks like it's in a binding position there in the `let`, we treat it as a reference.
-
-**▶ Services in Templates (resolve)**
-
-And when we resolve a template variable, it either resolves to a pattern variable, which will get replaced by use-site syntax, or to nothing, meaning it's macro-introduced. `x` isn't a pattern variable, so it resolves to nothing. And the pattern variables `m` and `p` are in scope. That's our first table entry.
-
-**▶ Services in Templates (use)**
-
-Now we move on to the use down here, `(m 1)`.
-
-**▶ Services in Templates (replace)**
-
-We expand it, so `(m 1)` gets replaced by the template body. The pattern variable `p` gets filled in with the use-site `1`, so it becomes `(let ([x 1]) _cursor1234)`.
-
-**▶ Services in Templates (cursor)**
-
-And we walk that expanded output just like any program. We reach the cursor, the one in the expanded use. This time `x` really is in scope, because the `let` binds it.
-
-**▶ Services in Templates (resolve cursor)**
-
-So the cursor resolves to the `x` on line 3, and `x` is in scope. That's our second entry. Notice only `x` is in scope here, not the pattern variables.
-
-**▶ Services in Templates (payoff)**
-
-And that's why autocomplete in the template works. `m` and `p` are pattern variables, we always had those. The interesting one is `x`, the macro-introduced binding, and we only learned about it by expanding a use. That's the tradeoff: it needs a use to exist somewhere. No uses, no template services. We could get around that by eagerly expanding templates, but that would restrict what your macros are allowed to do, so we require a use. And if you're a good HtDP student, you're writing your uses before you implement the macro anyway.
+> todo segue into limitations from here
 
 **▶ Limitations**
 
