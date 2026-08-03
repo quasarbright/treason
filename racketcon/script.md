@@ -83,49 +83,33 @@ Macro hygiene and fault tolerance makes this all a little more complicated, but 
 
 **▶ So Why Does Racket Struggle?**
 
-Now we can see why Racket struggles. Racket's IDE services only look at the end result of expansion and the expander doesn't record this resolution information as it goes in any way that's surfaced to the IDE. So if expansion stops from any error, we don't get the expansion result, so we don't get any information, which means no services on any part of the file. Not even parts before the error.
+Now we can see why Racket struggles. Racket's IDE services only look at the end result of expansion and the expander doesn't record this resolution information as it goes in any way that's surfaced to the IDE. So if expansion stops from any error, we get no information to inform services on any part of the file. Not even parts before the error.
 
 So how does Treason get around this? The core idea is that the expander records every variable definition and resolution as it goes, so even if expansion fails we still surface that information to the IDE. And even if there are errors, we just keep expanding so we analyze as much of the program as we can.
 
 **▶ Fault-Tolerant Expansion**
 
-For example, here's a tiny `define1` macro that turns `(define1 x)` into `(define x 1)`. The expander walks the forms one at a time. First, `(define1 x)` expands to `(define x 1)`, no problem. Next it hits `(define1)`, a bad use, missing its argument. Instead of giving up, the expander replaces that whole form with what I call a sentinel node, something that says "there was an error here," and keeps going. So it still reaches `(define1 y)` and expands it to `(define y 1)`. The error in the middle doesn't stop us from getting to `y`. This part isn't novel. Rust does it, Lean does it. But even this on its own is a huge win and gives us way more services in bad programs.
+For example, here's a little `define1` macro that turns `(define1 x)` into `(define x 1)`. The first use is fine, but the second is missing the variable so it errors. We just replace that use with a sentinel and keep going. This is nothing new. Languages like rust already do it.
 
 **▶ The Hard Part: Inside a Bad Macro Use (code)**
 
-But the harder part, the part that languages like Rust don't solve, is getting services inside a bad macro use. So look at this. I've got a `my-define` macro. It takes a function header and a body, and expands into a single-variable `define` with a `lambda`. And down here I use it, but I've left the function header empty. Just `()`. No function name, no parameters.
+The harder part is getting services inside of a macro use. Here, we have a `my-define` macro which desugars a function definition into a single-variable definition with a lambda. We have a bad use since it's missing the function name. Normally in Racket, and even in Rust, this would just be a syntax error and we'd get no services on the body. But come on, it's obviously just a bunch of normal expressions! We even annotate them as expressions with ~var expr!
 
-Languages like Rust would just give up here and move on to the next expression after this bad macro use. But it would be nice if we could somehow get services in the body of that definition. A little mistake shouldn't ruin all that nice code in there!
-
-This is where the main novel contribution of treason comes in. Something I call spec-driven subexpression expansion, or SSE for short
-
-**▶ Spec-Driven Subexpression Expansion**
-
-Look at the definition: the body patter variable is annotated `expr` and that corresponds to the square root expression in the use. It's just a plan old treason expression, not something specially interpreted by the macro. So even though it's a bad use and we can't actually instantiate the template since some parts are missing, we can still match up the body pattern variable to that square root, realize it's an expression from the annotation, and then expand that on its own just to get the analysis on it.
-
-That's how SSE works. We leverage annotations to learn a little more about the macro's intended grammar.
+In Treason we leverage these annotations to get services in the body. When we have a bad macro use, we keep matching the syntax against the pattern to try to find the body and we expand those subexpressions in isolation just to get services on them. I call this spec-driven subexpression expansion, and it's the main novel contribution of Treason.
 
 **▶ Cursor-Driven Autocomplete (empty)**
 
-One more mechanism, and I'll want it for the next part. How do we do autocomplete, especially when the spot you're completing at is empty? Here the body of this `let` is empty, and the blue bar is just where the user's cursor is. There's nothing there to complete yet.
+Another nice thing Treason has is autocomplete inside of macro uses, even when they're not done being written. Here's how it works.
 
-**▶ Cursor-Driven Autocomplete (insert)**
+We're in this let, and we're about to write the body and we want autocomplete. We start by inserting a bogus identifier where the cursor was, and expand the program. Eventually, we try to resolve the cursor. Of course, it's not bound to anything so this is going to be an error, which is fine. The important part is that in Treason, we record what was in scope when we try to resolve a reference. So we just check what was in scope when the expander tried to resolve the cursor reference and that's what we show in autocomplete. We're kind of flipping binding resolution on its head. If we were in the middle of typing a name, then we'd just use that unfinished identifier as the cursor identifier instead of inserting a bogus one.
 
-So we do something a little sneaky. We insert a cursor identifier, `_cursor1234`, right where the user's cursor is, and we expand the program.
-
-**▶ Cursor-Driven Autocomplete (reach)**
-
-Expanding, we reach the cursor.
-
-**▶ Cursor-Driven Autocomplete (resolve)**
-
-Now, the cursor identifier is made up, it's not bound to anything, so it resolves to nothing, an unbound error. And that's totally expected and fine, we put it there on purpose.
-
-**▶ Cursor-Driven Autocomplete (answer)**
-
-What we actually care about is the other column: what's in scope at the cursor. Here, just `x`. And that in-scope set is exactly the autocomplete list. If we didn't have macros, we could just read off what's in scope at the surrounding form. But with hygienic macros, working out what's really in scope is the sneaky part, and getting it right is what this buys us.
+And again, hygiene makes this a little more complicated, but that's the main idea.
 
 **▶ Services in Templates (setup)**
+
+One last nice thing treason gives us is services in macro templates. Here we see that `p` is in scope, which is expected since it's a pattern variable, but also `x` which is bound in the macro-introduced code. We actually get this pretty much for free since we track resolutions as we expand.
+
+Again, since this the service we're using is autocomplete, we insert a bogus cursor identifier. When the expander is going through the definition of the macro, we'll try to resolve `x` in the template just to see if it resolves to a pattern variable, and it doesn't, so we know it's a macro-introduced identifier in the template. But like any other resolution, we keep track 
 
 Now here's a nice payoff of all this. We get services inside the template of a macro definition. Let me walk through how. Here's a macro `m`, and I've inserted a cursor identifier, `_cursor1234`, right in the body of the template's `let`. And down here there's a use, `(m 1)`. Watch the resolution table fill in as we expand.
 

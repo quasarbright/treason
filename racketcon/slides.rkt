@@ -240,7 +240,7 @@
 (slide
  #:title "Demo: Services in a Template"
  (img "service-in-template.png" 820 280)
- (para #:align 'center "Autocomplete has pattern vars" (code m) "and"
+ (para #:align 'center "Autocomplete has pattern var"
        (codep p ",") "plus the macro-introduced" (codep x ",")
        "even in an empty" (code let) "body."))
 
