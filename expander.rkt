@@ -216,6 +216,19 @@
 ;;            collected regardless of success or failure
 (struct match-result [penv progress ose-stxs] #:transparent)
 
+;; An OSEError is a (ose-error Symbol String Stx (or Stx #f) (Listof Stx))
+;; A stx-error for a macro call that matched no clause, carrying the ~var-tagged
+;; subexpressions whose optimistic expansion has not happened yet.
+;;
+;; The expansion is left to whoever catches the error, because only the catcher
+;; knows when it is safe to run: in an expression context that is immediately, but
+;; in a definition context pass 1 has not yet discovered every binding, so it must
+;; wait until pass 2. The catcher expands them in the scope it passed to
+;; expand-macro, which is by construction the scope the match was attempted in.
+;;
+;; exprs : (Listof Stx) — subexpressions awaiting optimistic expansion
+(struct ose-error stx-error [exprs] #:transparent)
+
 ;; match-result-success? : MatchResult -> Boolean
 (define (match-result-success? r)
   (and (match-result-penv r) #t))
@@ -343,11 +356,16 @@
             [_ (raise-and-record-stx-error (stx-error 'let-syntax "bad syntax" expr #f))]))]
        ;; macro application
        [(macro-binding? binding)
-        ;; NOTE: expand-macro may perform optimistic subexpression expansion as a side effect before
-        ;; raising a stx-error
-        (with-stx-error-handling
-          (define-values (marked-stx disjoined-scp) (expand-macro head-stx expr scp))
-          (expand-expr marked-stx disjoined-scp))]
+        ;; NOTE: when no clause matches, expand-macro raises an ose-error carrying
+        ;; subexpressions to optimistically expand. This is an expression context, so
+        ;; every binding is already known and they can be expanded right away.
+        (define result
+          (with-stx-error-handling
+            (define-values (marked-stx disjoined-scp) (expand-macro head-stx expr scp))
+            (expand-expr marked-stx disjoined-scp)))
+        (when (ose-error? result)
+          (for ([e (ose-error-exprs result)]) (expand-expr e scp)))
+        result]
        ;; unbound in head position - pass through the stx-error from scope-resolve
        [(stx-error? binding)
         binding]
@@ -429,6 +447,10 @@
              `(#%expression ,expr-stx)]
             [_ (raise-and-record-stx-error (stx-error '#%expression "bad syntax" def #f))]))]
        ;; macro application
+       ;; NOTE: when no clause matches, expand-macro raises an ose-error. Its
+       ;; subexpressions are NOT expanded here — pass 1 has not discovered every
+       ;; binding yet, so expanding now would resolve them against an incomplete
+       ;; scope. The error is returned as this def's Pass1Def and pass 2 expands them.
        [(macro-binding? binding)
         (with-stx-error-handling
           (define-values (marked-stx disjoined-scp) (expand-macro head-stx def scp))
@@ -448,6 +470,11 @@
 ;; override it with their stored disjoin scope.
 (define (expand-def-pass2 def scp)
   (match def
+    ;; an unmatched macro call from pass 1: now that every binding in this
+    ;; definition context is known, optimistically expand its subexpressions
+    [(? ose-error?)
+     (for ([e (ose-error-exprs def)]) (expand-expr e scp))
+     def]
     [(? stx-error?) def]  ; pass through errors from pass 1
     [`(define ,var ,expr)
      `(define ,var ,(expand-expr expr scp))]
@@ -475,7 +502,7 @@
   (define binding (scope-resolve use-scp mname))
   (match-define (macro-binding _ macrot def-scp) binding)
   (define-values (penv tmpl)
-    (select-syntax-rule who macrot expr use-scp))
+    (select-syntax-rule who macrot expr))
   (define def-mark (fresh-def-mark))
   (define expanded-tmpl (expand-template tmpl penv def-mark))
   (define introduced-defn-scp (new-scope def-scp))
@@ -653,22 +680,23 @@
 ;; Syntax-Rules Matching
 ;; ============================================================
 
-;; select-syntax-rule : Symbol Syntax Syntax Scope -> (values PatternEnv Syntax)
+;; select-syntax-rule : Symbol Syntax Syntax -> (values PatternEnv Syntax)
 ;; Selects the first matching clause from a syntax-rules transformer.
-;; On failure, OSE-expands ~var subexpressions from the best-progress clause(s), then raises.
-(define (select-syntax-rule who macrot expr scp)
+;; On failure, raises an ose-error carrying the ~var subexpressions to expand.
+(define (select-syntax-rule who macrot expr)
   ;; macrot is (syntax-rules (literal ...) clause ...)
   (match macrot
     [(stx-quote (,_syntax-rules (,literal-ids ...) ,clauses ...))
      (define is-datum-literal? (make-is-datum-literal? literal-ids))
-     (try-patterns who clauses expr is-datum-literal? scp)]))
+     (try-patterns who clauses expr is-datum-literal?)]))
 
-;; try-patterns : Symbol [Listof Clause] Syntax (Id -> Bool) Scope -> (values PatternEnv Syntax)
+;; try-patterns : Symbol [Listof Clause] Syntax (Id -> Bool) -> (values PatternEnv Syntax)
 ;; Tries each clause in order until one matches.
 ;; On success, returns (values penv tmpl).
-;; On failure, OSE-expands ~var subexpressions from the best-progress clause(s), then raises.
+;; On failure, raises an ose-error carrying the ~var subexpressions of the
+;; best-progress clause(s), leaving their optimistic expansion to the catcher.
 ;; A Clause is (List pattern template).
-(define (try-patterns who clauses expr is-datum-literal? scp)
+(define (try-patterns who clauses expr is-datum-literal?)
   (define results+tmpls
     (for/list ([clause clauses])
       (match clause
@@ -685,19 +713,19 @@
              (lambda (a b)
                (progress<? (match-result-progress (car a))
                            (match-result-progress (car b))))))
-     (when (pair? sorted)
-       (define best-progress (match-result-progress (car (last sorted))))
-       (define r+t-with-best-progress
-         (for/list ([r+t sorted]
-                    #:when (equal? (match-result-progress (car r+t)) best-progress))
-           r+t))
-       (define oses
-         (apply set-intersect
-                (for/list ([r+t r+t-with-best-progress])
-                  (match-result-ose-stxs (car r+t)))))
-       (for ([e oses])
-         (expand-expr e scp)))
-     (raise-and-record-stx-error (stx-error who "no pattern matched" expr #f))]))
+     (define oses
+       (cond
+         [(pair? sorted)
+          (define best-progress (match-result-progress (car (last sorted))))
+          (define r+t-with-best-progress
+            (for/list ([r+t sorted]
+                       #:when (equal? (match-result-progress (car r+t)) best-progress))
+              r+t))
+          (apply set-intersect
+                 (for/list ([r+t r+t-with-best-progress])
+                   (match-result-ose-stxs (car r+t))))]
+         [else '()]))
+     (raise-and-record-stx-error (ose-error who "no pattern matched" expr #f oses))]))
 
 ;; progress<? : Progress Progress -> Boolean
 ;; True if p1 represents less progress than p2.
@@ -1570,6 +1598,19 @@
        (my-let ([x 1]) x)))
    (define result (analyze! (list (sexpr->syntax sexp))))
    (check-equal? (expander-result-errors result) (list)))
+  (test-case
+   "delayed OSE in a definition context is reported exactly once"
+   ;; The failing match is recorded when it is raised in pass 1; running the
+   ;; carried subexpressions in pass 2 must not record a second diagnostic.
+   (define sexp
+     '(block
+       (define-syntax m
+         (syntax-rules ()
+           [(m 1 (~var e expr)) 1]))
+       (m 2 (let ([q 1]) q))
+       (define x 2)))
+   (define result (analyze! (list (sexpr->syntax sexp))))
+   (check-equal? (length (expander-result-errors result)) 1))
 
   ;; ----------------------------------------
   ;; Ellipsis tests

@@ -1533,6 +1533,55 @@
     (list (hash 'uri test-uri 'range (find-range source "q2" 0)))))
 
   ;; ============================================================
+  ;; OSE in definition contexts (delayed until pass 2)
+  ;; ============================================================
+
+  (test-case
+   "optimistic sub-expression expansion: def context sees later bindings"
+   ;; m is applied in a definition context, so it expands during pass 1 — before
+   ;; (define x 2) has been discovered. Its OSE must be delayed until pass 2 so
+   ;; that autocomplete at the ~var subexpression still sees x.
+   (define source
+     "(define-syntax m
+        (syntax-rules ()
+          [(m 1 (~var e expr)) 1]))
+      (m 2 HERE)
+      (define x 2)")
+   (check-equal?
+    (autocomplete source (find-position source "HERE"))
+    (list (hasheq 'label "m") (hasheq 'label "x"))))
+
+  (test-case
+   "optimistic sub-expression expansion: def context, nested macro expansion"
+   ;; outer expands to an inner use during pass 1, and inner fails to match.
+   ;; The delayed OSE must run in the disjoin scope created for outer's expansion,
+   ;; and must still see the later (define x 2).
+   (define source
+     "(define-syntax inner
+        (syntax-rules ()
+          [(inner 1 (~var e expr)) 1]))
+      (define-syntax outer
+        (syntax-rules ()
+          [(outer e) (inner 2 e)]))
+      (outer HERE)
+      (define x 2)")
+   (check-equal?
+    (autocomplete source (find-position source "HERE"))
+    (list (hasheq 'label "inner") (hasheq 'label "outer") (hasheq 'label "x"))))
+
+  (test-case
+   "optimistic sub-expression expansion: def context OSE still resolves references"
+   ;; The delayed OSE expansion records resolutions just like an eager one would.
+   (define source
+     "(define-syntax m
+        (syntax-rules ()
+          [(m 1 (~var e expr)) 1]))
+      (m 2 (let ([q 1]) q))")
+   (check-equal?
+    (goto-definition source (find-position source "q" 1))
+    (list (hash 'uri test-uri 'range (find-range source "q" 0)))))
+
+  ;; ============================================================
   ;; Ellipsis error cases
   ;; ============================================================
 
