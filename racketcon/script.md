@@ -7,7 +7,7 @@ slide aren't marked.
 
 **▶ Title**
 
-Hi, I'm Mike Delmonaco. I'm a software engineer at Amazon Web Services, and I went to Northeastern, where I learned Racket. And these days I do a little bit of programming language research on the side with Michael Ballantyne. Today I want to show you something I've been working on with Michael Ballantyne called Treason. It's a language with a macro system similar to Racket's, but with better IDE support. Even when the program is broken
+Hi, I'm Mike Delmonaco. I'm a software engineer at Amazon Web Services, and I went to Northeastern, where I learned Racket. And these days I do a little bit of programming language research on the side with Michael Ballantyne. Today I want to show you something Michael Ballantyne and I have been working called Treason. It's a language with a macro system similar to Racket's, but with better IDE support, even when the program is broken.
 
 **▶ Agenda**
 
@@ -121,40 +121,46 @@ SSE also has some limitations.
 
 One is that we expand subexpressions in the context of the use, which is not necessarily the correct context for that subexpression. It may reference bindings internal to the macro, it may depend on syntax parameters established by the macro, stuff like that. But I'd argue it's better to have some possibly incorrect services on bad macro uses rather than nothing. And some of this could be alleviated by declaring binding rules in your macros. More on that later.
 
-**▶ Multiple Clauses: Which Subexpressions?**
+**▶ Recursive Macros**
 
-Another limitation is that recursive macros need to be written in such a way that they validate their syntax upfront with patterns as much as possible.
+Another limitation is that SSE is a little tricky with recursive macros. Here we have cond, which is implemented recursively. If we have a misuse on the first clause, we get SSE on the first condition, but none on the second clause because SSE never sees what the second clause is supposed to be.
 
-The second rough edge shows up with multiple clauses. Here's a macro with two clauses. The first one wants a `1` and then an expression; the second wants an expression and then a `2`. And I use it with two `let`s. So which subexpressions do we give services on? Both? Just the first? Just the second? What Treason does is borrow the idea of progress from syntax-parse. It figures out which clause got the furthest, going left to right and outside in, and then it uses that clause's annotations to decide which subexpressions to expand. There's also a wrinkle here where recursive macros have to be written so they validate the full syntax on the first expansion for this to behave, though syntax-parse already wants you to write them that way.
+If instead of just saying clause ..., we added more annotations, we can get SSE on the second clause too.
 
-**▶ Progress Can Misalign**
+This makes the pattern a little clunky here, but we could use syntax classes to clean it up. And by the way, this is also a limitation of Racket's syntax/parse where the annotations are necessary to get better error messages.
 
-But this progress idea can misalign. Here's a macro that wants `1`, then `2`, then an expression. And say I forget the `2`. Now the `let` slides over into the `2` position. Treason reads it as if it's supposed to be the `2`, so it doesn't expand it, and we get no services on it. And the actual expression slot gets treated as missing. Treason doesn't try to tell the difference between a missing subexpression, an extra one, or a wrong one. So for macros that are really positional, a use with something missing or extra can shift everything over and run SSE on the wrong stuff.
+One thing to note is that even with a missing expression, we can still get SSE in that first clause since the condition was there. But things don't always work out so nicely.
+
+**▶ SSE Can Misalign**
+
+SSE can get misaligned. This macro wants a 1, a 2, and then an expression. but if we forget the 2, treason thinks that `let` is supposed to be the 2 and says "hey that's not a 2!". In general, treason doesn't know the difference between a missing expression, a wrong expression, or an extra expression. It's kind of prefix-oriented like syntax-parse's notion of match progress.
+
+Treason could try harder to distinguish between these 3 cases, but that's something we'll leave to future work.
 
 **▶ Open Questions & Future Work**
 
-And there's plenty left to figure out. Procedural macros, meaning arbitrary code in your macros, and how to deal with side effects when you're speculatively expanding. Fault-tolerant reading, because right now if you're missing a paren, you're done. Incremental re-expansion, so the language server isn't redoing everything on every keystroke. And integrating syntax-spec, which I keep bringing up.
+Another thing we need to do in the future is think about procedural macros. Right now treason only has pattern-based macros like the ones we've seen with syntax-rules. There is nothing in principle preventing us from supporting procedural macros, we just haven't implemented them yet. But it's not as simple as adding runtime support. Side effects are tricky with this fault tolerance because if a macro runs some side effects and then fails, we still keep expanding the rest of the program due to fault tolerance, which could break some assumptions of macro authors. We also have to design how we want to expose runtime support for fault-tolerance and SSE for procedural macros.
+
+We can also do fault-tolerant reading. Right now, if you have mismatched parens, expansion doesn't even happen. This isn't a problem if you're in an IDE that auto-closes parens for you, but it'd still be nice if reading was as fault-tolerant as expansion. We're thinking about trying to use indentation to repair programs that fail to read.
+
+And right now, our language server re-expands every time you edit the program, so we could do something like Rust's salsa framework where we incrementally re-expand only the parts of the program that need to be re-expanded on a change. But again, that could get tricky with side effects.
+
+We also want to add support for declaring binding rules like in syntax spec.
 
 **▶ The syntax-spec Vision (PEG)**
 
-So let me actually paint that syntax-spec picture, because I think it's the exciting part. Say you've got a little PEG parser DSL. Here I'm defining a parser for addition. It reads something like "1+2" and builds an addition node. And that last part, `(addition l r)`, that's a regular Racket, or Treason, expression, using the variables `l` and `r` that got bound by the parser.
+For example, let's say we implement our own pattern-matching macro. To keep things simple, let's just think about cons, variable, and wildcard patterns.
 
-**▶ The syntax-spec Vision (mistake)**
+In Michael Ballantyne's syntax-spec we can declare the grammar and binding rules for our pattern matching macro. Don't worry about understanding everything going on here. The important part is that using the hash-colon binding rules, we can tell the expander that all the pattern variables should be in scope for the body of the clause. This information about binding rules can aid SSE.
 
-Now what happens when you make a mistake? Here I forgot to say what `l` binds to. I wrote `(bind l)` instead of `(bind l num-expr)`. And here's the problem. Your whole program here is one big macro use for a custom DSL, and that DSL is mostly opaque to the expander. So one error ruins the fault tolerance, because the expander has no idea what the grammar or the binding rules of your DSL forms are. The best it could do is expand `(addition l r)` in a really incomplete context, which isn't worth much.
+For example. Let's say we accidentally forget the cdr pattern in our cons pattern. Currently, in treason, we could get SSE on the clause bodies, but since SSE expands subexpressions in the context of the outer use, our services wouldn't know about the pattern variables that should be bound. But if we had something like syntax-spec, we could leverage the binding rules to know that those pattern variables should be in scope even in a misuse like this.
 
-**▶ The syntax-spec Vision (declare the rules)**
-
-But if we let you declare the grammar and the binding rules for your DSL forms, then we can bring all of this, the fault tolerance and SSE, into your DSL. In this example, we'd know that `bind` binds a variable and makes it available in the body of the `=>`. So we'd know `l` and `r` are bound in `(addition l r)`, and we could give you real services on it, even with the mistake. Expand what you can, even in a broken DSL use. So that's the vision: Treason plus syntax-spec, good tooling for your own DSLs, not just the core language.
-
-**▶ That's it!**
-
-And that's it.
+In general, the more information available to the expander before a macro expands, the better the IDE experience can be.
 
 **▶ Acknowledgements**
 
-I want to thank Michael Ballantyne, who I work with on syntax-spec and who's helped a ton with this. And the Racket community, for making all the tools I get to build on.
+Before I go, I want to thank Michael Ballantyne for making Treason with me, helping me develop this talk, and letting me help him make syntax spec. And of course, thank you to the Racket community for putting this event together and having me here.
 
 **▶ Treason (links + QR)**
 
-And if you're interested, the language and the language server are up on GitHub, and I've got a blog where I write about mostly Racket stuff. There's a QR code up here for it. Thanks.
+And if you're interested, Treason is on GitHub and there's a vscode extension for you to play around with it, and I also recently started a YouTube channel where I talk about math and some programming language stuff.

@@ -74,6 +74,17 @@
 
 ;; ANNOT-COLOR : the fill used to highlight a `~var` annotation
 (define ANNOT-COLOR (light (light "green")))
+;; further fills, for pairing several annotations with the fragments they expand
+(define ANNOT-COLOR-2 (light (light (light "blue"))))
+(define ANNOT-COLOR-3 (light (light "orange")))
+(define ANNOT-COLOR-4 (light (light (light "magenta"))))
+
+;; annotate-pairs : scene (Listof (Pairof color (Listof target))) -> scene
+;; Fills each group of targets in its own color, so an annotation and the
+;; fragment of the use it expands are visibly the same thing.
+(define (annotate-pairs scene color+targets)
+  (for/fold ([scene scene]) ([p color+targets])
+    (annotate-fill scene (cdr p) #:color (car p))))
 
 (slide
  (titlet "Treason: Making Macros and IDE Services Work Together")
@@ -525,7 +536,7 @@
 ;; ln : pict -> pict   tag a table cell with its source line
 (define (ln p) (hbl-append p (t " (line 3)")))
 (define tmpl-headers (list (bt "reference") (bt "resolves to") (bt "in scope")))
-;; the same cursor gets resolved twice — once in the definition, once in the use
+;; the same cursor gets resolved twice: once in the definition, once in the use
 (define tmpl-row1
   (list (ln (code _cursor1234)) (t "nothing (unbound)") (code p)))
 (define tmpl-row2
@@ -588,104 +599,166 @@
 ;; ---------------------------------------------------------------------------
 
 (slide
- #:title "Limitations"
- (item "Incomplete context: SSE expands under the whole use,"
-       "so bindings and syntax parameters may be missing")
- (item "Recursive macros must validate up front, the style"
-       (code syntax-parse) "already wants")
- (item "Missing / extra subexpressions can misalign SSE"))
+ #:title "Limitations: SSE in Incomplete Context"
+ (para "SSE expands subexpressions in the context of the use")
+ (item "No local bindings from the use")
+ (item "No syntax parameters established by the macro")
+ (item "No side effects from the macro"))
+
+;; Two versions of my-cond with the same misuse — the first clause is missing
+;; its body. Red marks the misuse. Each ~var annotation gets its own color,
+;; shared with the fragment of the use SSE expands for it; an annotation with
+;; no matching fragment (body) stays unpaired.
+(define cond-bad-a-cond (code (~var condition expr)))
+(define cond-bad-a-body (code (~var body expr)))
+(define cond-bad-c1 (code (> x 0)))
+(define cond-bad-clause1 (code [#,cond-bad-c1]))
+(define cond-bad-prog
+  (code
+   (define-syntax my-cond
+     (syntax-rules ()
+       [(my-cond [#,cond-bad-a-cond
+                  #,cond-bad-a-body]
+                 clause ...)
+        (if condition body (my-cond clause ...))]))
+   code:blank
+   (my-cond #,cond-bad-clause1
+            [(< x 0) (- x)])))
+(define cond-bad-scene
+  (annotate-box (annotate-pairs
+                 cond-bad-prog
+                 (list (cons ANNOT-COLOR (list cond-bad-a-cond cond-bad-c1))
+                       (cons ANNOT-COLOR-2 (list cond-bad-a-body))))
+                cond-bad-clause1 #:color "red"))
+
+(define cond-good-a-cond (code (~var condition expr)))
+(define cond-good-a-body (code (~var body expr)))
+(define cond-good-a-rcond (code (~var rest-conditions expr)))
+(define cond-good-a-rbody (code (~var rest-bodies expr)))
+(define cond-good-c1 (code (> x 0)))
+(define cond-good-clause1 (code [#,cond-good-c1]))
+(define cond-good-c2 (code (< x 0)))
+(define cond-good-b2 (code (- x)))
+(define cond-good-prog
+  (code
+   (define-syntax my-cond
+     (syntax-rules ()
+       [(my-cond [#,cond-good-a-cond
+                  #,cond-good-a-body]
+                 [#,cond-good-a-rcond
+                  #,cond-good-a-rbody]
+                 ...)
+        (if condition body
+            (my-cond
+             [rest-conditions rest-bodies] ...))]))
+   code:blank
+   (my-cond #,cond-good-clause1
+            [#,cond-good-c2 #,cond-good-b2])))
+(define cond-good-scene
+  (annotate-box (annotate-pairs
+                 cond-good-prog
+                 (list (cons ANNOT-COLOR (list cond-good-a-cond cond-good-c1))
+                       (cons ANNOT-COLOR-2 (list cond-good-a-body))
+                       (cons ANNOT-COLOR-3 (list cond-good-a-rcond cond-good-c2))
+                       (cons ANNOT-COLOR-4 (list cond-good-a-rbody cond-good-b2))))
+                cond-good-clause1 #:color "red"))
 
 (slide
- #:title "Incomplete Context"
- (para #:align 'center "Back to the" (code my-define) "use: in the body,"
-       (code x) "and" (code y)
-       "don't resolve. They were supposed to be the parameters.")
- (item "The pattern failed, so no binding for" (code x) "or" (code y)
-       "was ever made")
- (item "We never learn they should be in scope in the body")
- (item "Best we can do: expand the body in the use's context")
- 'next
- (blank 15)
- (para #:align 'center "If we could declare binding rules that"
-       (codep x ",") (code y) "are bound in the body, we'd get them"
-       "too. That's what" (codep syntax-spec ".")))
-
-(slide
- #:title "Multiple Clauses: Which Subexpressions?"
+ #:title "Limitations: SSE with Recursive Macros"
  #:layout 'top
- (code
-  (define-syntax m
-    (syntax-rules ()
-      [(m 1 (~var e expr)) 1]
-      [(m (~var e expr) 2) 2]))
-  (m (let ([x 3]) x) (let ([y 4]) y)))
- 'next
- (t "Both? Just the first? Just the second?")
- 'next
- (para #:align 'center (codep syntax-parse "-style")
-       "progress: the clause that got furthest wins, and its"
-       "annotations pick the subexpressions."))
+ cond-bad-scene
+
+ (item "The first clause has no body, bad syntax.")
+ (item "No SSE on the second clause because we never recursively call" (code cond)))
 
 (slide
- #:title "Progress Can Misalign"
+ #:title "Limitations: SSE with Recursive Macros"
+ #:layout 'top
+ cond-good-scene
+ 'next
+ (item "With more annotations, we get SSE on the second clause")
+ (item "This could also be accomplished with syntax classes to keep patterns small")
+ (item "This is a limitation in Racket's" (code syntax/parse) "as well")
+ )
+
+(slide
+ #:title "Limitations: SSE Can Misalign"
  #:layout 'top
  (code
   (define-syntax m
     (syntax-rules ()
       [(m 1 2 (~var e expr)) 1]))
   (m 1 (let ([y 4]) y)))
- 'next
- (para #:align 'center "Forget the" (codep 2 ",") "and the" (code let)
-       "is read as the missing" (codep 2 ".") "It isn't expanded, so no"
-       "services on it." (code e) "is treated as missing.")
- 'next
- (para #:align 'center "Treason doesn't tell missing / extra / wrong"
-       "apart, so positional macros can misalign SSE."))
+ 
+ (item "No services on the" (code let) "because treason thinks it's supposed to be the" (code 2))
+ (item "Treason doesn't know missing vs wrong vs extra"))
 
 (slide
  #:title "Open Questions & Future Work"
- (item "Procedural macros: how do we handle side effects?")
+ (item "Procedural macros: side effects and runtime support for fault-tolerance and SSE")
  (item "Fault-tolerant reading (missing parens are still fatal)")
  (item "Incremental re-expansion on edits")
- (item (code syntax-spec) "integration"))
+ (item "binding declaration like" (code syntax-spec)))
 
 ;; ---------------------------------------------------------------------------
 ;; syntax-spec vision
 ;; ---------------------------------------------------------------------------
 
-(slide
- #:title "The syntax-spec Vision"
- #:layout 'top
- (t "A PEG-parser DSL")
- (code
-  (struct addition [l r])
-  (code:comment "parses \"1+2\" as (addition 1 2)")
-  (define-peg add-expr
-    (=> (seq (bind l num-expr) "+" (bind r num-expr))
-        (addition l r)))))
+(define match-use-code
+  (code
+   (define (sum nums)
+     (my-match nums
+       [(cons num nums)
+        (+ num (sum nums))]
+       [_ 0]))))
+
+;; A trimmed version of the real match DSL's syntax-spec declaration
+;; (syntax-spec/tests/dsls/match.rkt), cut down to the patterns this example
+;; uses. A pattern exports the variables it binds; a clause imports them into
+;; a scope around its body. The host interface for my-match is left out.
+(define match-spec-code
+  (code
+   (syntax-spec
+    (binding-class pat-var)
+
+    (nonterminal/exporting pat
+      x:pat-var
+      #:binding (export x)
+      _ (code:comment "exports nothing")
+      (cons p1:pat p2:pat)
+      #:binding [(re-export p1) (re-export p2)])
+
+    (nonterminal clause
+      [p:pat body:racket-expr]
+      #:binding (scope (import p) body)))))
+
+(define match-bad-code
+  (code
+   (define (sum nums)
+     (my-match nums
+       [#,(framed-code (cons num))
+        (+ num (sum nums))]
+       [_ 0]))))
 
 (slide
- #:title "The syntax-spec Vision"
+ #:title "Binding Declarations"
  #:layout 'top
- (t "Now make a mistake")
- (code
-  (struct addition [l r])
-  (define-peg add-expr
-    (=> (seq (bind #,(framed-code l)) "+" (bind r num-expr))
-        (addition l r))))
- 'next
- (t "One big, opaque macro use. Any error ruins fault-tolerance.")
- (t "The expander doesn't know the DSL's grammar or binding rules."))
+ (t "A pattern-matching DSL")
+ match-use-code)
 
 (slide
- #:title "The syntax-spec Vision"
- (t "Let users declare grammar and binding rules for DSL forms.")
- 'next
- (blank 20)
- (item "We'd know" (code bind) "binds a variable, available in the"
-       (code =>) "body")
- (item "So" (code l) "and" (code r) "are bound in" (code (addition l r)))
- (item "And we get real services on it"))
+ #:title "Binding Declarations"
+ #:layout 'top
+ (t "The DSL author declares the grammar and the binding rules")
+ match-spec-code
+ (para "These binding rules can be used for SSE!")
+ )
+
+(slide
+ #:title "Binding Declarations"
+ #:layout 'top
+ match-bad-code
+ (para "With binding rules, SSE could know that the pattern variables are in scope"))
 
 ;; ---------------------------------------------------------------------------
 ;; End
@@ -702,7 +775,7 @@
 ;; regenerate the blog QR each build; simple-qr isn't a treason dependency,
 ;; so keep it out of info.rkt and assume it's installed locally
 (define blog-qr-path (path->string (build-path here "blog-qr.png")))
-(qr-write "https://quasarbright.github.io/blog/" blog-qr-path)
+(qr-write "https://www.youtube.com/@QuasarBrightYT" blog-qr-path)
 (define blog-qr (scale (bitmap (read-bitmap blog-qr-path)) 0.5))
 
 (slide
@@ -710,6 +783,6 @@
  (t "The language and language server are on GitHub")
  (hyperlinkize (t "https://github.com/quasarbright/treason"))
  (blank 20)
- (t "My (mostly Racket) blog")
- (hyperlinkize (t "https://quasarbright.github.io/blog/"))
+ (t "My Math and PL YouTube Channel")
+ (hyperlinkize (t "https://www.youtube.com/@QuasarBrightYT"))
  blog-qr)
