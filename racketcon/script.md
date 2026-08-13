@@ -115,17 +115,15 @@ One nice thing is that this didn't really have to be baked into treason. By just
 
 One limitation of this is that it only works when your macro has a use. But if we're good htdp students so we're writing uses of our macros before we implement, right everybody?
 
-> todo segue into limitations from here
-
-**▶ Limitations**
-
-So, SSE is powerful, but it has some rough edges. There are three big ones. SSE expands under an incomplete context, recursive macros need to be written a certain way, and missing or extra subexpressions can misalign SSE. Let me walk through those.
+SSE also has some limitations.
 
 **▶ Incomplete Context**
 
-Back to that `my-define` use. In the body, `x` and `y` don't resolve, and those were supposed to be the parameters. Because the pattern failed, no binding for `x` or `y` was ever made, so we never find out they're supposed to be in scope. We're expanding the body on its own, under the whole macro use, so bindings from inside the use, syntax parameters, that kind of thing, might be missing. And that could get weird if there are side effects. Now, if we could declare the binding rules of the macro up front, say that `x` and `y` are bound in the body, then we'd get them too, even in a broken use. And that's exactly the kind of thing syntax-spec does, which is the tool I work on with Michael. So that's a direction we could take Treason.
+One is that we expand subexpressions in the context of the use, which is not necessarily the correct context for that subexpression. It may reference bindings internal to the macro, it may depend on syntax parameters established by the macro, stuff like that. But I'd argue it's better to have some possibly incorrect services on bad macro uses rather than nothing. And some of this could be alleviated by declaring binding rules in your macros. More on that later.
 
 **▶ Multiple Clauses: Which Subexpressions?**
+
+Another limitation is that recursive macros need to be written in such a way that they validate their syntax upfront with patterns as much as possible.
 
 The second rough edge shows up with multiple clauses. Here's a macro with two clauses. The first one wants a `1` and then an expression; the second wants an expression and then a `2`. And I use it with two `let`s. So which subexpressions do we give services on? Both? Just the first? Just the second? What Treason does is borrow the idea of progress from syntax-parse. It figures out which clause got the furthest, going left to right and outside in, and then it uses that clause's annotations to decide which subexpressions to expand. There's also a wrinkle here where recursive macros have to be written so they validate the full syntax on the first expansion for this to behave, though syntax-parse already wants you to write them that way.
 
