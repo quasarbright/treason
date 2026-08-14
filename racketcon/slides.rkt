@@ -508,40 +508,88 @@
 ;; Services in templates: step-by-step, growing the resolution table
 ;; ---------------------------------------------------------------------------
 
+;; Hygiene colors: where an identifier came from. The point of the section is
+;; that the cursor is macro-introduced, so use-site bindings can't reach it.
+(define INTRODUCED-COLOR (light (light (light "magenta"))))
+(define USE-SITE-COLOR (light (light "cyan")))
+
+;; swatch : color String -> pict   a legend chip
+(define (swatch c label)
+  (hc-append 8 (frame (filled-rectangle 22 22 #:color c #:draw-border? #f)
+                      #:color "gray")
+             (t label)))
+(define hygiene-legend
+  (hc-append 40
+             (swatch INTRODUCED-COLOR "introduced by the macro")
+             (swatch USE-SITE-COLOR "from the macro use")))
+
 ;; two program states, same line count so the layout never shifts:
-;; A shows the use (m y); B shows it replaced by the instantiated template.
-(define tmpl-def-cur (code _cursor1234))
-(define tmpl-call (code (m 1)))
+;; A shows the use (m 2); B shows it replaced by the instantiated template.
+(define tmpl-a-tlet (code let))
+(define tmpl-a-x (code x))
+(define tmpl-a-cur (code _cursor1234))
+(define tmpl-a-arg (code 2))
+(define tmpl-call (code (m #,tmpl-a-arg)))
 (define tmpl-prog-A
-  (code
-   (define-syntax m
-     (syntax-rules ()
-       [(m p) (let ([x p]) #,tmpl-def-cur)]))
-   code:blank
-   #,tmpl-call))
-(define tmpl-use-cur (code _cursor1234))
-(define tmpl-use-expansion (code (let ([x 1]) #,tmpl-use-cur)))
+  (annotate-pairs
+   (code
+    (define-syntax m
+      (syntax-rules ()
+        [(m p) (#,tmpl-a-tlet ([#,tmpl-a-x p]) #,tmpl-a-cur)]))
+    code:blank
+    (let ([y 1]) #,tmpl-call))
+   (list (cons INTRODUCED-COLOR (list tmpl-a-tlet tmpl-a-x tmpl-a-cur))
+         (cons USE-SITE-COLOR (list tmpl-a-arg)))))
+
+(define tmpl-b-tlet (code let))
+(define tmpl-b-tx (code x))
+(define tmpl-b-tcur (code _cursor1234))
+(define tmpl-b-elet (code let))
+(define tmpl-b-x (code x))
+(define tmpl-b-arg (code 2))
+(define tmpl-b-cur (code _cursor1234))
+(define tmpl-use-expansion
+  (code (#,tmpl-b-elet ([#,tmpl-b-x #,tmpl-b-arg]) #,tmpl-b-cur)))
 (define tmpl-prog-B
-  (code
-   (define-syntax m
-     (syntax-rules ()
-       [(m p) (let ([x p]) _cursor1234)]))
-   code:blank
-   #,tmpl-use-expansion))
+  (annotate-pairs
+   (code
+    (define-syntax m
+      (syntax-rules ()
+        [(m p) (#,tmpl-b-tlet ([#,tmpl-b-tx p]) #,tmpl-b-tcur)]))
+    code:blank
+    (let ([y 1]) #,tmpl-use-expansion))
+   (list (cons INTRODUCED-COLOR
+               (list tmpl-b-tlet tmpl-b-tx tmpl-b-tcur
+                     tmpl-b-elet tmpl-b-x tmpl-b-cur))
+         (cons USE-SITE-COLOR (list tmpl-b-arg)))))
 
 (slide #:title "Services in Templates" #:layout 'top
   (img "service-in-template.png")
-  (t "How does autocomplete get x?"))
+  (t "How does autocomplete get x, and why not y?"))
 
+;; tint : pict color -> pict   a colored background behind one name.
+;; refocus keeps the result's bounding box and baseline those of p, so tinting
+;; a cell doesn't shift the text beside it or grow the row.
+(define (tint p c)
+  (refocus (cc-superimpose
+            (filled-rectangle (+ 4 (pict-width p)) (+ 4 (pict-height p))
+                              #:color c #:draw-border? #f)
+            p)
+           p))
 ;; ln : pict -> pict   tag a table cell with its source line
 (define (ln p) (hbl-append p (t " (line 3)")))
 (define tmpl-headers (list (bt "reference") (bt "resolves to") (bt "in scope")))
-;; the same cursor gets resolved twice: once in the definition, once in the use
+;; The same cursor gets resolved twice: once in the definition, once in the use.
+;; Only the macro-introduced names are tinted: the cursor and x. p is a pattern
+;; variable and m is a top-level binding, so neither was introduced by the macro.
 (define tmpl-row1
-  (list (ln (code _cursor1234)) (t "nothing (unbound)") (code p)))
+  (list (ln (tint (code _cursor1234) INTRODUCED-COLOR))
+        (t "nothing (unbound)")
+        (code p)))
 (define tmpl-row2
-  (list (ln (code _cursor1234)) (t "nothing (unbound)")
-        (hbl-append (code x) (t ", ") (code m))))
+  (list (ln (tint (code _cursor1234) INTRODUCED-COLOR))
+        (t "nothing (unbound)")
+        (hbl-append (tint (code x) INTRODUCED-COLOR) (t ", ") (code m))))
 (define (tmpl-table . rows)
   (table 3 (append tmpl-headers (apply append rows))
          lc-superimpose cc-superimpose 40 10))
@@ -552,7 +600,8 @@
   (slide #:title "Services in Templates" #:layout 'top
          caption
          program
-         (blank 30)
+         hygiene-legend
+         (blank 20)
          table))
 
 (tmpl-slide
@@ -564,13 +613,13 @@
 (tmpl-slide
  (cap "First we expand the definition, and reach the cursor sitting in the"
       "template.")
- (annotate-box tmpl-prog-A tmpl-def-cur)
+ (annotate-box tmpl-prog-A tmpl-a-cur)
  (tmpl-table))
 
 (tmpl-slide
  (cap "Scanning a template, the only names we know are the pattern variables."
       "So all we learn here is that" (code p) "is in scope.")
- (annotate-box tmpl-prog-A tmpl-def-cur)
+ (annotate-box tmpl-prog-A tmpl-a-cur)
  (tmpl-table tmpl-row1))
 
 (tmpl-slide
@@ -584,14 +633,16 @@
  (tmpl-table tmpl-row1))
 
 (tmpl-slide
- (cap "When resolving it again," (code x) "is in scope.")
- (annotate-box tmpl-prog-B tmpl-use-cur)
+ (cap "When resolving it again," (code x) "is in scope, but" (code y) "is not:"
+      "the cursor came from the macro, so hygiene keeps the use site's"
+      "bindings away from it.")
+ (annotate-box tmpl-prog-B tmpl-b-cur)
  (tmpl-table tmpl-row1))
 
 (tmpl-slide
  (cap "One reference, two resolutions. Autocomplete takes the union of what"
       "was in scope for each:" (codep m ",") (codep p ",") (codep x "."))
- (annotate-box tmpl-prog-B tmpl-use-cur)
+ (annotate-box tmpl-prog-B tmpl-b-cur)
  (tmpl-table tmpl-row1 tmpl-row2))
 
 ;; ---------------------------------------------------------------------------
@@ -675,11 +726,7 @@
  #:title "Limitations: SSE with Recursive Macros"
  #:layout 'top
  cond-good-scene
- 'next
- (item "With more annotations, we get SSE on the second clause")
- (item "This could also be accomplished with syntax classes to keep patterns small")
- (item "This is a limitation in Racket's" (code syntax/parse) "as well")
- )
+ (item "Better annotations means Better SSE"))
 
 (slide
  #:title "Limitations: SSE Can Misalign"
@@ -763,9 +810,6 @@
 ;; ---------------------------------------------------------------------------
 ;; End
 ;; ---------------------------------------------------------------------------
-
-(slide
- (titlet "That's it!"))
 
 (slide
  #:title "Acknowledgements"
