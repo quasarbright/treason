@@ -1584,33 +1584,36 @@
   ;; ============================================================
   ;; Colon-annotated pattern variables (x:expr)
   ;; ============================================================
-  ;; x:expr is shorthand for (~var x expr). The whole token is the pattern
-  ;; variable's binding site, so goto-definition and find-references anchor to it,
-  ;; while the name before the colon is what templates reference and what
-  ;; autocomplete offers.
+  ;; x:expr is shorthand for (~var x expr). The name before the colon is the
+  ;; pattern variable: it is what templates reference, what autocomplete offers,
+  ;; and — spanning only its own characters, not the whole token — where
+  ;; goto-definition and find-references anchor.
   ;;
   ;; Index guide for "(let-syntax ([m (syntax-rules () [(_ q:expr) (let ([a q]) a)])]) (m 5))":
-  ;;   q0: the pattern variable, written q:expr
+  ;;   q0: the pattern variable's name in q:expr
   ;;   q1: template reference in (let ([a q]) a)
 
   (test-case
-   "annotated pvar: goto-def on template reference goes to the annotated pattern site"
+   "annotated pvar: goto-def on template reference goes to the pattern variable's name"
+   ;; The binding site is just the q of q:expr, not the whole token.
    (define source "(let-syntax ([m (syntax-rules () [(_ q:expr) (let ([a q]) a)])]) (m 5))")
    (check-equal?
     (goto-definition source (find-position source "q" 1))
-    (list (hash 'uri test-uri 'range (find-range source "q:expr" 0)))))
+    (list (hash 'uri test-uri 'range (find-range source "q" 0)))))
 
   (test-case
-   "annotated pvar: goto-def anywhere in the annotated token returns the whole token"
+   "annotated pvar: goto-def on the pattern variable's name returns itself"
    (define source "(let-syntax ([m (syntax-rules () [(_ q:expr) (let ([a q]) a)])]) (m 5))")
-   ;; on the pattern variable's name
    (check-equal?
     (goto-definition source (find-position source "q" 0))
-    (list (hash 'uri test-uri 'range (find-range source "q:expr" 0))))
-   ;; on the annotation
-   (check-equal?
-    (goto-definition source (find-position source ":expr" 0))
-    (list (hash 'uri test-uri 'range (find-range source "q:expr" 0)))))
+    (list (hash 'uri test-uri 'range (find-range source "q" 0)))))
+
+  (test-case
+   "annotated pvar: the syntax class name is not a binding"
+   ;; expr names a syntax class, not a variable, so there is nothing to go to.
+   (define source "(let-syntax ([m (syntax-rules () [(_ q:expr) (let ([a q]) a)])]) (m 5))")
+   (check-equal? (goto-definition source (find-position source "expr" 0)) (list))
+   (check-equal? (find-references source (find-position source "expr" 0)) (list)))
 
   (test-case
    "annotated pvar: find-refs from the annotated pattern site finds template uses"
@@ -1705,7 +1708,30 @@
    (define source "(let-syntax ([m (syntax-rules () [(_ w:foo) (let ([a w]) a)])]) (m 5))")
    (check-equal?
     (goto-definition source (find-position source "w" 1))
-    (list (hash 'uri test-uri 'range (find-range source "w:foo" 0)))))
+    (list (hash 'uri test-uri 'range (find-range source "w" 0)))))
+
+  (test-case
+   "annotated pvar: the wildcard _ is not a pattern variable, annotated or not"
+   ;; Neither _ nor _:expr binds anything, so neither shows up in autocomplete.
+   (define bare "(let-syntax ([m (syntax-rules () [(_ _ q) (let ([a q]) a)])]) (m 1 2))")
+   (check-false (member (hasheq 'label "_") (autocomplete bare (find-position bare "q" 1))))
+   (define annotated "(let-syntax ([m (syntax-rules () [(_ _:expr q) (let ([a q]) a)])]) (m 1 2))")
+   (check-false (member (hasheq 'label "_")
+                        (autocomplete annotated (find-position annotated "q" 1)))))
+
+  (test-case
+   "annotated pvar: ... is not a pattern variable"
+   (define source "(let-syntax ([m (syntax-rules () [(_ p ... q) (let ([a q]) a)])]) (m 1 2))")
+   (check-false (member (hasheq 'label "...")
+                        (autocomplete source (find-position source "q" 1)))))
+
+  (test-case
+   "annotated pvar: a datum literal whose name contains a colon binds nothing"
+   ;; Guarding on the literal matters: without it a:b would be read as the
+   ;; annotated pattern variable a, and a would show up in autocomplete.
+   (define source "(let-syntax ([m (syntax-rules (a:b) [(_ a:b q) (let ([c q]) c)])]) (m a:b 2))")
+   (check-false (member (hasheq 'label "a")
+                        (autocomplete source (find-position source "q" 1)))))
 
   (test-case
    "annotated pvar: a datum literal whose name contains a colon is not an annotation"

@@ -613,19 +613,20 @@
 ;; annotated-pvar : match expander
 ;; Matches either surface form of an annotated pattern variable, binding the
 ;; pattern variable identifier and the syntax class identifier.
-;; ex: (match p [(annotated-pvar pvar (app identifier-symbol 'expr)) ...])
+;; Sub-patterns follow stx-quote's convention: a bare atom is a literal symbol to
+;; match against, and an unquoted sub-pattern matches anything.
+;; ex: (match p [(annotated-pvar ,pvar expr) ...])   ; only the expr class
+;; ex: (match p [(annotated-pvar ,pvar ,cls) ...])   ; any class
 (define-match-expander annotated-pvar
-  (syntax-rules ()
-    [(_ pvar-pat class-pat)
-     (app parse-annotated-pvar (list pvar-pat class-pat))]))
+  (syntax-rules (unquote)
+    [(_ (unquote pvar-pat) (unquote class-pat))
+     (app parse-annotated-pvar (list pvar-pat class-pat))]
+    [(_ (unquote pvar-pat) class-name)
+     (app parse-annotated-pvar (list pvar-pat (app identifier-symbol 'class-name)))]))
 
 ;; parse-annotated-pvar : Stx -> (or/c (List Identifier Identifier) #f)
 ;; Recognizes an annotated pattern variable in either surface form, returning its
 ;; pattern variable identifier and its syntax class identifier, or #f if p is not one.
-;; For the id:class shorthand both identifiers are synthesized from the single token.
-;; They carry the whole token's span, since the LSP tables are keyed by span and the
-;; surface tree only ever contains the whole token, and the whole token's marks, so the
-;; pattern variable is bound-identifier=? to template references of the same name.
 (define (parse-annotated-pvar p)
   (match p
     [(stx-quote (~var ,(? identifier? pvar) ,(? identifier? cls)))
@@ -634,8 +635,10 @@
     [_ #f]))
 
 ;; split-annotated-id : Identifier -> (or/c (List Identifier Identifier) #f)
-;; Splits id:class at its first colon into two identifiers, or returns #f if the
-;; identifier has no colon or nothing on one side of it (e.g. x: or :expr).
+;; Splits id:class at its first colon into an identifier for the pattern variable
+;; name and one for the syntax class, each spanning only its own part of the token.
+;; Returns #f if the identifier has no colon, or nothing on one side of it
+;; (e.g. x: or :expr), which makes it an ordinary pattern variable.
 ;; ex: (split-annotated-id body:expr) = (list body expr)
 (define (split-annotated-id id)
   (define str (symbol->string (identifier-symbol id)))
@@ -643,14 +646,44 @@
     (for/first ([c (in-string str)] [i (in-naturals)] #:when (char=? c #\:)) i))
   (and colon-index
        (> colon-index 0)
-       (< (add1 colon-index) (string-length str))
-       (list (retag-identifier id (substring str 0 colon-index))
-             (retag-identifier id (substring str (add1 colon-index))))))
+       (< colon-index (sub1 (string-length str)))
+       (list (substring-identifier id 0 colon-index)
+             (substring-identifier id (add1 colon-index) (string-length str)))))
 
-;; retag-identifier : Identifier String -> Identifier
-;; Makes an identifier named str carrying id's span and marks.
-(define (retag-identifier id str)
-  (stx (string->symbol str) (stx-span id) (stx-marks id)))
+(module+ test
+  (define annotated (string->stx "test" "body:expr"))
+  (define parts (split-annotated-id annotated))
+  (check-equal? (map identifier-symbol parts) '(body expr))
+  ;; each part spans only its own text, not the whole token
+  (check-equal? (stx-span (first parts)) (span (loc "test" 0 0) (loc "test" 0 4)))
+  (check-equal? (stx-span (second parts)) (span (loc "test" 0 5) (loc "test" 0 9)))
+  ;; the marks of the token carry over to both parts
+  (check-equal? (map stx-marks parts) (list (stx-marks annotated) (stx-marks annotated)))
+  ;; identifiers that are not annotations
+  (check-false (split-annotated-id (string->stx "test" "body")))
+  (check-false (split-annotated-id (string->stx "test" "body:")))
+  (check-false (split-annotated-id (string->stx "test" ":expr")))
+  (check-false (split-annotated-id (string->stx "test" ":")))
+  ;; only the first colon splits
+  (check-equal? (map identifier-symbol (split-annotated-id (string->stx "test" "a:b:c")))
+                '(a b:c)))
+
+;; substring-identifier : Identifier Natural Natural -> Identifier
+;; Makes an identifier from the [start, end) character range of id's name, spanning
+;; only that range of id's source and keeping its marks. An identifier is a single
+;; token, so it never spans a line break and the range stays within one line.
+(define (substring-identifier id start end)
+  (define name (symbol->string (identifier-symbol id)))
+  (define spn (stx-span id))
+  (struct-copy stx id
+               [e (string->symbol (substring name start end))]
+               [span (and spn (span (loc-shift (span-start spn) start)
+                                    (loc-shift (span-start spn) end)))]))
+
+;; loc-shift : Loc Natural -> Loc
+;; Moves a location forward by n characters within its line.
+(define (loc-shift lc n)
+  (struct-copy loc lc [column (+ (loc-column lc) n)]))
 
 ;; ============================================================
 ;; Pattern Variable LSP Resolution
@@ -688,28 +721,30 @@
       [(stx-quote (,_head . ,rest)) rest]
       [_ '()]))
   ;; bind-pvar! : Identifier -> Void
-  ;; Binds id as a pattern variable, unless it is a datum literal or the wildcard _.
+  ;; Binds id as a pattern variable, unless it is a datum literal, the wildcard _,
+  ;; or the ellipsis ... — none of which name anything a template can reference.
   (define (bind-pvar! id)
-    (unless (or (is-literal? id) (eq? (identifier-symbol id) '_))
+    (unless (or (is-literal? id)
+                (eq? (identifier-symbol id) '_)
+                (eq? (identifier-symbol id) '...))
       (scope-bind! scp id (pattern-variable-binding id))))
   (let loop ([p pat-args])
     (match p
       ;; annotated pattern variable: must precede the bare identifier case, so that
       ;; body:expr binds body rather than a pattern variable named body:expr
-      [(annotated-pvar id (app identifier-symbol 'expr))
+      [(annotated-pvar ,id expr)
        #:when (not (datum-literal? is-literal? p))
        (bind-pvar! id)]
       ;; unknown syntax class: report it, but still bind the pattern variable so
       ;; template references to it resolve
-      [(annotated-pvar id cls)
+      [(annotated-pvar ,id ,cls)
        #:when (not (datum-literal? is-literal? p))
        (record-stx-error! (stx-error '~var "unknown syntax class" p cls))
        (bind-pvar! id)]
       [(stx-quote (~var . ,_))
        (raise-and-record-stx-error (stx-error '~var "bad syntax" pat p))]
       [(? identifier? id)
-       (unless (eq? (identifier-symbol id) '...)
-         (bind-pvar! id))]
+       (bind-pvar! id)]
       [(stx-quote (,a . ,d))
        (loop a)
        (loop d)]
@@ -843,12 +878,12 @@
          (match-result #f (reverse progress-rev) '()))]
     ;; annotated pattern variable — (~var e expr) or e:expr — always succeeds and
     ;; records stx for OSE; must appear before the general pair and identifier cases
-    [((annotated-pvar pvar (app identifier-symbol 'expr)) syn)
+    [((annotated-pvar ,pvar expr) syn)
      #:when (not (datum-literal? is-datum-literal? pat))
      (match-result (hash (identifier->key pvar) syn) (reverse progress-rev) (list syn))]
     ;; unknown syntax class: still binds the pattern variable, but no OSE.
     ;; The error is reported once at definition time, by build-pvar-scope.
-    [((annotated-pvar pvar _) syn)
+    [((annotated-pvar ,pvar ,_) syn)
      #:when (not (datum-literal? is-datum-literal? pat))
      (match-result (hash (identifier->key pvar) syn) (reverse progress-rev) '())]
     ;; bare ...: not a valid pattern variable
@@ -955,7 +990,7 @@
       [(? (lambda (x) (and (identifier? x) (is-datum-literal? x)))) acc]
       [(stx-quote _) acc]
       ;; annotated pattern variable: must precede the bare identifier case
-      [(annotated-pvar pvar _)
+      [(annotated-pvar ,pvar ,_)
        (define key (identifier->key pvar))
        (if (member key acc) acc (cons key acc))]
       [(? identifier? id)
@@ -1349,7 +1384,7 @@
 ;; If the node is itself a binding site, includes its own span
 ;; (triggers VS Code's "already here" fallback to show references).
 (define (goto-definition result pos)
-  (define node (find-node-at-position result pos))
+  (define node (refine-annotated-node result (find-node-at-position result pos) pos))
   (cond
     [(not node) '()]
     [else
@@ -1364,10 +1399,32 @@
 ;; find-references : ExpanderResult Loc -> (Listof Span)
 ;; Returns spans of all reference sites for the node at position.
 (define (find-references result pos)
-  (define node (find-node-at-position result pos))
+  (define node (refine-annotated-node result (find-node-at-position result pos) pos))
   (if node
       (filter-map stx-span (get-reference-sites-of result node))
       '()))
+
+;; refine-annotated-node : ExpanderResult (or/c Stx #f) Loc -> (or/c Stx #f)
+;; Narrows a colon-annotated pattern variable token to the part of it containing
+;; pos — the pattern variable's name or its syntax class — since the expander
+;; records those parts, not the whole token. An ordinary identifier whose name
+;; happens to contain a colon has no such record and is returned unchanged.
+(define (refine-annotated-node result node pos)
+  (define parts (and (identifier? node) (split-annotated-id node)))
+  (or (and parts
+           (for/first ([part parts]
+                       #:when (and (stx-span part)
+                                   (span-contains? (stx-span part) pos)
+                                   (recorded-span? result (stx-span part))))
+             part))
+      node))
+
+;; recorded-span? : ExpanderResult Span -> Boolean
+;; Returns #t if the expander recorded a binding or a resolution at the span.
+(define (recorded-span? result spn)
+  (define state (expander-result-state result))
+  (or (hash-has-key? (expander-state-bindings state) spn)
+      (hash-has-key? (expander-state-resolutions state) spn)))
 
 ;; autocomplete : ExpanderResult Loc -> (Set Symbol)
 ;; Returns names in scope at position.
@@ -1689,6 +1746,14 @@
    (define result (analyze! (list (sexpr->syntax sexp))))
    (check-equal? (expander-result-errors result) (list))
    (check-equal? (expander-result-expanded result) '(block (#%expression 1))))
+  (test-case
+   "a datum literal whose name contains a colon does not match a non-literal"
+   ;; Without the literal guard, a:b would match anything as an annotated pattern
+   ;; variable and the first clause would win.
+   (define sexp '(let-syntax ([m (syntax-rules (a:b) [(m a:b) 1] [(m x) 2])]) (m 5)))
+   (define result (analyze! (list (sexpr->syntax sexp))))
+   (check-equal? (expander-result-errors result) (list))
+   (check-equal? (expander-result-expanded result) '(block (#%expression 2))))
   (test-case
    "an identifier with nothing on one side of its colon is an ordinary pattern variable"
    (define sexp '(let-syntax ([m (syntax-rules () [(m x:) x:])]) (m 1)))
