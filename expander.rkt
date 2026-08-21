@@ -613,16 +613,11 @@
 ;; annotated-pvar : match expander
 ;; Matches either surface form of an annotated pattern variable, binding the
 ;; pattern variable identifier and the syntax class identifier.
-;; Sub-patterns follow stx-quote's convention: a bare atom is a literal symbol to
-;; match against, and an unquoted sub-pattern matches anything.
-;; ex: (match p [(annotated-pvar ,pvar expr) ...])   ; only the expr class
-;; ex: (match p [(annotated-pvar ,pvar ,cls) ...])   ; any class
+;; ex: (match p [(annotated-pvar pvar (app identifier-symbol 'expr)) ...])
 (define-match-expander annotated-pvar
-  (syntax-rules (unquote)
-    [(_ (unquote pvar-pat) (unquote class-pat))
-     (app parse-annotated-pvar (list pvar-pat class-pat))]
-    [(_ (unquote pvar-pat) class-name)
-     (app parse-annotated-pvar (list pvar-pat (app identifier-symbol 'class-name)))]))
+  (syntax-rules ()
+    [(_ pvar-pat class-pat)
+     (app parse-annotated-pvar (list pvar-pat class-pat))]))
 
 ;; parse-annotated-pvar : Stx -> (or/c (List Identifier Identifier) #f)
 ;; Recognizes an annotated pattern variable in either surface form, returning its
@@ -732,12 +727,12 @@
     (match p
       ;; annotated pattern variable: must precede the bare identifier case, so that
       ;; body:expr binds body rather than a pattern variable named body:expr
-      [(annotated-pvar ,id expr)
+      [(annotated-pvar id (app identifier-symbol 'expr))
        #:when (not (datum-literal? is-literal? p))
        (bind-pvar! id)]
       ;; unknown syntax class: report it, but still bind the pattern variable so
       ;; template references to it resolve
-      [(annotated-pvar ,id ,cls)
+      [(annotated-pvar id cls)
        #:when (not (datum-literal? is-literal? p))
        (record-stx-error! (stx-error '~var "unknown syntax class" p cls))
        (bind-pvar! id)]
@@ -878,12 +873,12 @@
          (match-result #f (reverse progress-rev) '()))]
     ;; annotated pattern variable — (~var e expr) or e:expr — always succeeds and
     ;; records stx for OSE; must appear before the general pair and identifier cases
-    [((annotated-pvar ,pvar expr) syn)
+    [((annotated-pvar pvar (app identifier-symbol 'expr)) syn)
      #:when (not (datum-literal? is-datum-literal? pat))
      (match-result (hash (identifier->key pvar) syn) (reverse progress-rev) (list syn))]
     ;; unknown syntax class: still binds the pattern variable, but no OSE.
     ;; The error is reported once at definition time, by build-pvar-scope.
-    [((annotated-pvar ,pvar ,_) syn)
+    [((annotated-pvar pvar _) syn)
      #:when (not (datum-literal? is-datum-literal? pat))
      (match-result (hash (identifier->key pvar) syn) (reverse progress-rev) '())]
     ;; bare ...: not a valid pattern variable
@@ -990,7 +985,7 @@
       [(? (lambda (x) (and (identifier? x) (is-datum-literal? x)))) acc]
       [(stx-quote _) acc]
       ;; annotated pattern variable: must precede the bare identifier case
-      [(annotated-pvar ,pvar ,_)
+      [(annotated-pvar pvar _)
        (define key (identifier->key pvar))
        (if (member key acc) acc (cons key acc))]
       [(? identifier? id)
@@ -1418,6 +1413,29 @@
                                    (recorded-span? result (stx-span part))))
              part))
       node))
+
+(module+ test
+  ;; q:expr starts at column 37; q is at 37, the colon at 38, expr at 39-42.
+  (define pattern-source
+    "(let-syntax ([m (syntax-rules () [(_ q:expr) (let ([a q]) a)])]) (m 5))")
+  (define pattern-result (analyze! (string->stxs "test" pattern-source)))
+  (define annotated-token (find-node-at-position pattern-result (loc "test" 0 37)))
+  (check-equal? (identifier-symbol annotated-token) 'q:expr)
+  ;; on the pattern variable's name: narrowed to the name, which is the binding site
+  (let ([refined (refine-annotated-node pattern-result annotated-token (loc "test" 0 37))])
+    (check-equal? (identifier-symbol refined) 'q)
+    (check-equal? (stx-span refined) (span (loc "test" 0 37) (loc "test" 0 38))))
+  ;; on the syntax class: nothing is recorded there, so the token is left alone
+  (check-equal? (refine-annotated-node pattern-result annotated-token (loc "test" 0 40))
+                annotated-token)
+  ;; an ordinary variable whose name contains a colon is left alone: it is
+  ;; recorded under its whole span, not under either part
+  (define variable-source "(let ([a:b 1]) a:b)")
+  (define variable-result (analyze! (string->stxs "test" variable-source)))
+  (define variable-token (find-node-at-position variable-result (loc "test" 0 15)))
+  (check-equal? (identifier-symbol variable-token) 'a:b)
+  (check-equal? (refine-annotated-node variable-result variable-token (loc "test" 0 15))
+                variable-token))
 
 ;; recorded-span? : ExpanderResult Span -> Boolean
 ;; Returns #t if the expander recorded a binding or a resolution at the span.
