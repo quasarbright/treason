@@ -1582,6 +1582,150 @@
     (list (hash 'uri test-uri 'range (find-range source "q" 0)))))
 
   ;; ============================================================
+  ;; Colon-annotated pattern variables (x:expr)
+  ;; ============================================================
+  ;; x:expr is shorthand for (~var x expr). The whole token is the pattern
+  ;; variable's binding site, so goto-definition and find-references anchor to it,
+  ;; while the name before the colon is what templates reference and what
+  ;; autocomplete offers.
+  ;;
+  ;; Index guide for "(let-syntax ([m (syntax-rules () [(_ q:expr) (let ([a q]) a)])]) (m 5))":
+  ;;   q0: the pattern variable, written q:expr
+  ;;   q1: template reference in (let ([a q]) a)
+
+  (test-case
+   "annotated pvar: goto-def on template reference goes to the annotated pattern site"
+   (define source "(let-syntax ([m (syntax-rules () [(_ q:expr) (let ([a q]) a)])]) (m 5))")
+   (check-equal?
+    (goto-definition source (find-position source "q" 1))
+    (list (hash 'uri test-uri 'range (find-range source "q:expr" 0)))))
+
+  (test-case
+   "annotated pvar: goto-def anywhere in the annotated token returns the whole token"
+   (define source "(let-syntax ([m (syntax-rules () [(_ q:expr) (let ([a q]) a)])]) (m 5))")
+   ;; on the pattern variable's name
+   (check-equal?
+    (goto-definition source (find-position source "q" 0))
+    (list (hash 'uri test-uri 'range (find-range source "q:expr" 0))))
+   ;; on the annotation
+   (check-equal?
+    (goto-definition source (find-position source ":expr" 0))
+    (list (hash 'uri test-uri 'range (find-range source "q:expr" 0)))))
+
+  (test-case
+   "annotated pvar: find-refs from the annotated pattern site finds template uses"
+   (define source "(let-syntax ([m (syntax-rules () [(_ q:expr) (let ([a q]) a)])]) (m 5))")
+   (check-equal?
+    (find-references source (find-position source "q" 0))
+    (list (hash 'uri test-uri 'range (find-range source "q" 1)))))
+
+  (test-case
+   "annotated pvar: find-refs from a template reference finds the same set"
+   (define source "(let-syntax ([m (syntax-rules () [(_ q:expr) (let ([a q]) a)])]) (m 5))")
+   (check-equal?
+    (find-references source (find-position source "q" 1))
+    (list (hash 'uri test-uri 'range (find-range source "q" 1)))))
+
+  (test-case
+   "annotated pvar: autocomplete offers the pattern variable without its annotation"
+   (define source "(let-syntax ([m (syntax-rules () [(_ q:expr) (let ([a q]) a)])]) (m 5))")
+   (define completions (autocomplete source (find-position source "q" 1)))
+   (check-not-false (member (hasheq 'label "q") completions))
+   (check-false (member (hasheq 'label "q:expr") completions)))
+
+  (test-case
+   "annotated pvar: autocomplete at a cursor in the template offers the pattern variable"
+   ;; HERE stands in for the cursor position inside the template.
+   (define source "(let-syntax ([m (syntax-rules () [(_ q:expr) (let ([a HERE]) a)])]) (m 5))")
+   (define completions (autocomplete source (find-position source "HERE" 0)))
+   (check-not-false (member (hasheq 'label "q") completions))
+   (check-false (member (hasheq 'label "q:expr") completions)))
+
+  (test-case
+   "annotated pvar: optimistic sub-expression expansion via x:expr"
+   ;; The call does not match the pattern, but the b:expr subexpression is still
+   ;; expanded, so goto-definition works inside it.
+   (define source
+     "(let-syntax ([my-let (syntax-rules () [(_ ([x e:expr]) b:expr) (let ([x e]) b)])])
+        (my-let (b) (let ([q 1]) q)))")
+   (check-equal?
+    (goto-definition source (find-position source "q" 1))
+    (list (hash 'uri test-uri 'range (find-range source "q" 0)))))
+
+  (test-case
+   "annotated pvar: OSE inside an ellipsis pattern"
+   ;; Each element must start with literal 1; the second fails, but both
+   ;; annotated subexpressions are collected and expanded.
+   (define source
+     "(let-syntax ([m (syntax-rules () [(_ (1 e:expr) ...) (let ([x 1]) x)])])
+        (m (1 (let ([q1 1]) q1)) (2 (let ([q2 2]) q2))))")
+   (check-equal?
+    (goto-definition source (find-position source "q1" 1))
+    (list (hash 'uri test-uri 'range (find-range source "q1" 0))))
+   (check-equal?
+    (goto-definition source (find-position source "q2" 1))
+    (list (hash 'uri test-uri 'range (find-range source "q2" 0)))))
+
+  (test-case
+   "annotated pvar: ellipsis pattern of annotated pattern variables expands"
+   (define source
+     "(let-syntax ([m (syntax-rules () [(_ e:expr ...) (block e ...)])])
+        (let ([q 1]) (m q q)))")
+   (check-equal?
+    (goto-definition source (find-position source "q" 1))
+    (list (hash 'uri test-uri 'range (find-range source "q" 0))))
+   (check-equal?
+    (goto-definition source (find-position source "q" 2))
+    (list (hash 'uri test-uri 'range (find-range source "q" 0)))))
+
+  (test-case
+   "annotated pvar: x:expr and (~var x expr) behave the same"
+   (define shorthand
+     "(let-syntax ([m (syntax-rules () [(_ 1 e:expr) e])]) (m 2 (let ([q 1]) q)))")
+   (define explicit
+     "(let-syntax ([m (syntax-rules () [(_ 1 (~var e expr)) e])]) (m 2 (let ([q 1]) q)))")
+   (check-equal?
+    (goto-definition shorthand (find-position shorthand "q" 1))
+    (list (hash 'uri test-uri 'range (find-range shorthand "q" 0))))
+   (check-equal?
+    (goto-definition explicit (find-position explicit "q" 1))
+    (list (hash 'uri test-uri 'range (find-range explicit "q" 0)))))
+
+  (test-case
+   "error message: unknown syntax class in an annotation"
+   (check-true (has-diagnostic-from?
+                "(let-syntax ([m (syntax-rules () [(_ x:foo) x])]) (m 1))"
+                '~var)))
+
+  (test-case
+   "annotated pvar: an unknown syntax class still binds the pattern variable"
+   ;; Fault tolerance: the annotation is reported, but LSP still works on the pvar.
+   ;; w rather than x: "let-syntax" and "syntax-rules" both contain an x, which
+   ;; would throw off find-position's occurrence count.
+   (define source "(let-syntax ([m (syntax-rules () [(_ w:foo) (let ([a w]) a)])]) (m 5))")
+   (check-equal?
+    (goto-definition source (find-position source "w" 1))
+    (list (hash 'uri test-uri 'range (find-range source "w:foo" 0)))))
+
+  (test-case
+   "annotated pvar: a datum literal whose name contains a colon is not an annotation"
+   (define source "(let-syntax ([m (syntax-rules (a:b) [(_ a:b) 1] [(_ x) 2])]) (m a:b))")
+   (check-false (has-diagnostic-from? source '~var))
+   ;; the literal is matched as a literal, so nothing in it is a binding site
+   (check-equal? (goto-definition source (find-position source "a:b" 1)) (list)))
+
+  (test-case
+   "annotated pvar: an identifier with nothing on one side of its colon is an ordinary pattern variable"
+   (define source "(let-syntax ([m (syntax-rules () [(_ x:) (let ([a x:]) a)])]) (m 5))")
+   (check-false (has-diagnostic-from? source '~var))
+   (check-equal?
+    (goto-definition source (find-position source "x:" 1))
+    (list (hash 'uri test-uri 'range (find-range source "x:" 0))))
+   (check-false (has-diagnostic-from?
+                 "(let-syntax ([m (syntax-rules () [(_ :expr) 1])]) (m 5))"
+                 '~var)))
+
+  ;; ============================================================
   ;; Ellipsis error cases
   ;; ============================================================
 
