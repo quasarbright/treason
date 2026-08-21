@@ -107,9 +107,9 @@ And again, hygiene makes this a little more complicated, but that's the main ide
 
 **▶ Services in Templates (setup)**
 
-One last nice thing treason gives us is services in macro templates. Here we see that `p` is in scope, which is expected since it's a pattern variable, but also `x` which is bound in the macro-introduced code. We actually get this pretty much for free since we track resolutions as we expand.
+One last nice thing treason gives us is services in macro templates. Here we see that `p` is in scope, which is expected since it's a pattern variable, and `m` from the definition site, but also `x` which is bound in the macro-introduced code. We actually get this pretty much for free since we track resolutions as we expand.
 
-Again, since this the service we're using is autocomplete, we insert a bogus cursor identifier. When the expander is going through the definition of the macro, we'll try to resolve the cursor identifier in the template just to see if it resolves to a pattern variable. and it doesn't, so we know it's a macro-introduced identifier in the template. But like any other resolution, we keep track of what was in scope. Then we end up expanding the use, and in there we end up expanding the macro-introduced cursor identifier once again. When resolving this macro-introduced cursor identifier, the macro-introduced binding `x` is in scope. Now we have 2 resolutions of the same identifier, which is something that happens when macros are involved. When this happens, autocomplete gives us the union of names in scope from all the resolutions.
+Again, since this the service we're using is autocomplete, we insert a bogus cursor identifier. When the expander is going through the definition of the macro, we'll try to resolve the cursor identifier in the template just to see if it resolves to a pattern variable. and it doesn't, so we know it's a macro-introduced identifier in the template. But like any other resolution, we keep track of what was in scope. Then we end up expanding the use, and in there we end up expanding the macro-introduced cursor identifier once again. When resolving this macro-introduced cursor identifier, the macro-introduced binding `x` is in scope, and also `m` from the definition site. Now we have 2 resolutions of the same identifier, which is something that happens when macros are involved. When this happens, autocomplete gives us the union of names in scope from all the resolutions.
 
 One nice thing is that this didn't really have to be baked into treason. By just recording information from resolutions as we expand, we naturally get services in templates from the expansion of macro uses.
 
@@ -133,9 +133,9 @@ One thing to note is that even with a missing expression, we can still get SSE i
 
 **▶ SSE Can Misalign**
 
-SSE can get misaligned. This macro wants a 1, a 2, and then an expression. but if we forget the 2, treason thinks that `let` is supposed to be the 2 and says "hey that's not a 2!". In general, treason doesn't know the difference between a missing expression, a wrong expression, or an extra expression. It's kind of prefix-oriented like syntax-parse's notion of match progress.
+SSE can get misaligned. This macro wants a 1, a 2, and then an expression. but if we forget the 2, treason thinks that `let` is supposed to be the 2 and says "hey that's not a 2!". In general, treason doesn't try to distinguish the difference between a missing expression, a wrong expression, or an extra expression. It's kind of prefix-oriented like syntax-parse's notion of match progress.
 
-Treason could try harder to distinguish between these 3 cases, but that's something we'll leave to future work.
+It's not always clear, but treason could try harder to distinguish between these 3 cases, but that's something we'll leave to future work.
 
 **▶ Open Questions & Future Work**
 
@@ -149,11 +149,43 @@ We also want to add support for declaring binding rules like in syntax spec.
 
 **▶ The syntax-spec Vision (PEG)**
 
-For example, let's say we implement our own pattern-matching macro. To keep things simple, let's just think about cons, variable, and wildcard patterns.
+For example, let's say we implement our own pattern-matching macro. This isn't just some simple syntactic sugar like other macros we've seen. This is a full-blown DSL with its own grammar and binding rules for patterns.
+> show good use
 
-In Michael Ballantyne's syntax-spec we can declare the grammar and binding rules for our pattern matching macro. Don't worry about understanding everything going on here. The important part is that using the hash-colon binding rules, we can tell the expander that all the pattern variables should be in scope for the body of the clause. This information about binding rules can aid SSE.
+What would happen happen if we had a malformed pattern?
+> show malformed example with no highlights. have red boxes around num and rest
 
-For example. Let's say we accidentally forget the cdr pattern in our cons pattern. Currently, in treason, we could get SSE on the clause bodies, but since SSE expands subexpressions in the context of the outer use, our services wouldn't know about the pattern variables that should be bound. But if we had something like syntax-spec, we could leverage the binding rules to know that those pattern variables should be in scope even in a misuse like this.
+We _could_ get some SSE on the clause body since it's an expr, but treason doesn't know what a pattern is, so there's no way for us to get anything like SSE on the pattern itself. And our match macro also has its own binding rules: We want all of the variables in the pattern to be bound in the body. Treason doesn't know about these rules, so SSE would see the pattern variable references in the body as unbound since it'll expand the body out of context.
+
+Here's what an implementation of this match macro would look like
+
+```racket
+(define-syntax my-match
+  (syntax-rules (cons)
+    [(_ target:expr [(cons (~var pa ???) (~var pd ???)) (~var body expr)])
+     ...]
+    ...))
+```
+
+We can have ~var expr on the body, but there is nothing we can put for pa and pd since treason doesn't know what a pattern is.
+
+In order to tell treason what a pattern is and what the binding rules are for patterns, we could use something like Michael Ballantyne's syntax-spec.
+
+With syntax-spec, we can declare the grammar for our pattern matching macro. So a pattern is either a cons, a variable, or a wildcard pattern. And a clause has a pattern or an expr We can also add binding rules to tell the expander that all pattern variables are exported from the pattern and bound in the body.
+> existing syntax-spec slide
+
+Now we could rewrite our macro to annotate the c with a clause, and treason will know what that means.
+
+```racket
+(define-syntax my-match
+  (syntax-rules (cons)
+    [(_ target:expr (~var c clause))
+     ...]
+    ...))
+```
+
+With this, if we go back to our bad use, SSE would be able to figure out that num in the body should be bound by the pattern.
+> show slide with num resolving but rest still unbound with red box
 
 In general, the more information available to the expander before a macro expands, the better the IDE experience can be.
 

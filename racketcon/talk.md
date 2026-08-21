@@ -218,8 +218,14 @@ notes with michael going over slides
 - [x] don't even show the definition of json-map!. just make it clear that it's a macro that we defined
 - [x] highlight the annotation in the fix slide
 - [x] update script for slides changes
-- [ ] be more explicit and clear about how when we're in the template resolving `x`, we are only checking for pattern variable bindings.
+- [x] be more explicit and clear about how when we're in the template resolving `x`, we are only checking for pattern variable bindings.
 - [x] in the services in template stuff, m should not be in scope. underscore it in the pattern. fix the bug and redo the screenshot too https://github.com/quasarbright/treason/issues/65
   - [x] update screenshot. it actually doesn't need to be updated. `m` is in scope bc of the use, not the pattern
 - [x] make macro-use vs introduced more obvious in the services in template autocomplete example with color. also make the thing we're expanding `(let ([y 2]) (m 1))` and emphasize that `y` is not in scope for cursor due to hygiene
+- [x] in services in template, either mention m everywhere or nowhere (do it everywhere since it's in the screenshot)
+- [x] do the dimming thing when you show the syntax spec. show grammar first then binding rules
+- [x] emphasize the importance of grammar. treason knows what `expr` is, but not `pat`. but treason doesn't know how binding works for pat, so we need a binding declaration
+- [x] call out that num resolves. maybe draw an arrow. emphasize "even though we can't expand match"
+- [ ] show problem of no ss before showing ss.
+- [ ] say rest in cdr, not nums
 - [ ] finish. slides aren't done and script isn't done, even for some done slides

@@ -633,7 +633,7 @@
  (tmpl-table tmpl-row1))
 
 (tmpl-slide
- (cap "When resolving it again," (code x) "is in scope, but" (code y) "is not:"
+ (cap "When resolving it again," (code x) "and" (code m) "are in scope, but" (code y) "is not:"
       "the cursor came from the macro, so hygiene keeps the use site's"
       "bindings away from it.")
  (annotate-box tmpl-prog-B tmpl-b-cur)
@@ -720,32 +720,33 @@
  cond-bad-scene
 
  (item "The first clause has no body, bad syntax.")
- (item "No SSE on the second clause because we never recursively call" (code cond)))
+ (item "No SSE on the second clause because we never recursively call" (code my-cond)))
 
 (slide
  #:title "Limitations: SSE with Recursive Macros"
  #:layout 'top
  cond-good-scene
- (item "Better annotations means Better SSE"))
+ (t "Better annotations means Better SSE"))
 
 (slide
  #:title "Limitations: SSE Can Misalign"
- #:layout 'top
  (code
   (define-syntax m
     (syntax-rules ()
       [(m 1 2 (~var e expr)) 1]))
   (m 1 (let ([y 4]) y)))
- 
+ (blank 10)
  (item "No services on the" (code let) "because treason thinks it's supposed to be the" (code 2))
- (item "Treason doesn't know missing vs wrong vs extra"))
+ (item "Treason doesn't distinguish between missing vs wrong vs extra"))
 
 (slide
  #:title "Open Questions & Future Work"
- (item "Procedural macros: side effects and runtime support for fault-tolerance and SSE")
+ (item "Procedural macros")
+ (subitem "Side effects")
+ (subitem "Runtime support for fault-tolerance and SSE")
  (item "Fault-tolerant reading (missing parens are still fatal)")
  (item "Incremental re-expansion on edits")
- (item "binding declaration like" (code syntax-spec)))
+ (item "Binding declaration like" (code syntax-spec)))
 
 ;; ---------------------------------------------------------------------------
 ;; syntax-spec vision
@@ -763,29 +764,42 @@
 ;; (syntax-spec/tests/dsls/match.rkt), cut down to the patterns this example
 ;; uses. A pattern exports the variables it binds; a clause imports them into
 ;; a scope around its body. The host interface for my-match is left out.
-(define match-spec-code
+;; match-spec-code : Boolean -> pict
+;; The declaration, with the #:binding clauses faded when dim? so the grammar
+;; can be read on its own before the binding rules arrive.
+(define (match-spec-code dim?)
+  (define (b p) (if dim? (cellophane p 0.25) p))
+  (define bind-var (b (code #:binding (export x))))
+  (define bind-cons (b (code #:binding [(re-export p1) (re-export p2)])))
+  (define bind-clause (b (code #:binding (scope (import p) body))))
   (code
    (syntax-spec
     (binding-class pat-var)
 
     (nonterminal/exporting pat
       x:pat-var
-      #:binding (export x)
-      _ (code:comment "exports nothing")
+      #,bind-var
+      _
       (cons p1:pat p2:pat)
-      #:binding [(re-export p1) (re-export p2)])
+      #,bind-cons)
 
     (nonterminal clause
       [p:pat body:racket-expr]
-      #:binding (scope (import p) body)))))
+      #,bind-clause))))
 
+;; The binder and the reference share the fill annotate-fill uses elsewhere for
+;; a resolution, so the pair reads as "this num resolves to that num".
+(define match-bad-binder (code num))
+(define match-bad-ref (code num))
 (define match-bad-code
-  (code
-   (define (sum nums)
-     (my-match nums
-       [#,(framed-code (cons num))
-        (+ num (sum nums))]
-       [_ 0]))))
+  (annotate-fill
+   (code
+    (define (sum nums)
+      (my-match nums
+        [#,(framed-code (cons #,match-bad-binder))
+         (+ #,match-bad-ref (sum nums))]
+        [_ 0])))
+   (list match-bad-binder match-bad-ref)))
 
 (slide
  #:title "Binding Declarations"
@@ -797,8 +811,14 @@
  #:title "Binding Declarations"
  #:layout 'top
  (t "The DSL author declares the grammar and the binding rules")
- match-spec-code
- (para "These binding rules can be used for SSE!")
+ (match-spec-code #t))
+
+(slide
+ #:title "Binding Declarations"
+ #:layout 'top
+ (t "The DSL author declares the grammar and the binding rules")
+ (match-spec-code #f)
+ (t "These binding rules can be used for SSE!")
  )
 
 (slide
