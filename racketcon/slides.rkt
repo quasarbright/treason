@@ -75,7 +75,7 @@
                                  (+ (pict-height target) (* 2 vpad))
                                  #:color c #:draw-border? #f))))
 
-;; ANNOT-COLOR : the fill used to highlight a `~var` annotation
+;; ANNOT-COLOR : the fill used to highlight a name:kind annotation
 (define ANNOT-COLOR (light (light "green")))
 ;; further fills, for pairing several annotations with the fragments they expand
 (define ANNOT-COLOR-2 (light (light (light "blue"))))
@@ -205,7 +205,7 @@
  (item "Macros are not built to be fault-tolerant")
  (item "But in Racket, everything is a macro!"))
 
-(define fix-annot (code (~var body expr)))
+(define fix-annot (code body:expr))
 (define fix-code
   (annotate-fill
    (code
@@ -239,16 +239,16 @@
 
 (slide
  #:title "Autocomplete at a Missing Expression"
- (img "Pasted image 20260529105419.png" 820 320)
+ (img "autocomplete-at-a-missing-expression.png" 820 320)
  (para #:align 'center "The" (code my-let)
        "body is missing, but autocomplete works and even includes" (code y)))
 
 (slide
  #:title "Demo: Services Inside a Bad Macro Use"
- (img "Pasted image 20260529102934.png" 820 300)
+ (img "inside-bad-use.png" 820 300)
  (para "The outer" (code my-let)
        "is malformed, but we get services in the inner one")
- (para "Powered by the" (code (~var b expr)) "annotation")
+ (para "Powered by the" (code b:expr) "annotation")
  (para "Other languages don't do this!"))
 
 (slide
@@ -407,7 +407,7 @@
   (define-syntax my-define
     (syntax-rules ()
       [(my-define (f x ...)
-         (~var body expr) ...)
+         body:expr ...)
        (define f
          (lambda (x ...)
            (block body ...)))]))
@@ -416,9 +416,9 @@
     (sqrt (+ (sqr x) (sqr y)))))
  (t "The header is empty: no function name, no parameters."))
 
-;; SSE: link the (~var body expr) annotation in the definition to the
+;; SSE: link the body:expr annotation in the definition to the
 ;; matching subexpression in the use, both filled the same color
-(define sse-annot (code (~var body expr)))
+(define sse-annot (code body:expr))
 (define sse-body (code (sqrt (+ (sqr x) (sqr y)))))
 (define sse-code
   (annotate-fill
@@ -660,19 +660,18 @@
  (item "No side effects from the macro"))
 
 ;; Two versions of my-cond with the same misuse — the first clause is missing
-;; its body. Red marks the misuse. Each ~var annotation gets its own color,
+;; its body. Red marks the misuse. Each annotation gets its own color,
 ;; shared with the fragment of the use SSE expands for it; an annotation with
 ;; no matching fragment (body) stays unpaired.
-(define cond-bad-a-cond (code (~var condition expr)))
-(define cond-bad-a-body (code (~var body expr)))
+(define cond-bad-a-cond (code condition:expr))
+(define cond-bad-a-body (code body:expr))
 (define cond-bad-c1 (code (> x 0)))
 (define cond-bad-clause1 (code [#,cond-bad-c1]))
 (define cond-bad-prog
   (code
    (define-syntax my-cond
      (syntax-rules ()
-       [(my-cond [#,cond-bad-a-cond
-                  #,cond-bad-a-body]
+       [(my-cond [#,cond-bad-a-cond #,cond-bad-a-body]
                  clause ...)
         (if condition body (my-cond clause ...))]))
    code:blank
@@ -685,10 +684,10 @@
                        (cons ANNOT-COLOR-2 (list cond-bad-a-body))))
                 cond-bad-clause1 #:color "red"))
 
-(define cond-good-a-cond (code (~var condition expr)))
-(define cond-good-a-body (code (~var body expr)))
-(define cond-good-a-rcond (code (~var rest-conditions expr)))
-(define cond-good-a-rbody (code (~var rest-bodies expr)))
+(define cond-good-a-cond (code condition:expr))
+(define cond-good-a-body (code body:expr))
+(define cond-good-a-rcond (code rest-conditions:expr))
+(define cond-good-a-rbody (code rest-bodies:expr))
 (define cond-good-c1 (code (> x 0)))
 (define cond-good-clause1 (code [#,cond-good-c1]))
 (define cond-good-c2 (code (< x 0)))
@@ -697,8 +696,7 @@
   (code
    (define-syntax my-cond
      (syntax-rules ()
-       [(my-cond [#,cond-good-a-cond
-                  #,cond-good-a-body]
+       [(my-cond [#,cond-good-a-cond #,cond-good-a-body]
                  [#,cond-good-a-rcond
                   #,cond-good-a-rbody]
                  ...)
@@ -736,7 +734,7 @@
  (code
   (define-syntax m
     (syntax-rules ()
-      [(m 1 2 (~var e expr)) 1]))
+      [(m 1 2 e:expr) 1]))
   (m 1 (let ([y 4]) y)))
  (blank 10)
  (item "No services on the" (code let) "because treason thinks it's supposed to be the" (code 2))
@@ -824,23 +822,21 @@
 
 ;; The macro itself. First with holes: there is no annotation for a pattern,
 ;; because treason has no notion of one.
-(define match-pa-hole (colorize (tt "???") "red"))
-(define match-pd-hole (colorize (tt "???") "red"))
+(define match-pa-hole (hbl-append (code pa:) (colorize (tt "???") "red")))
+(define match-pd-hole (hbl-append (code pd:) (colorize (tt "???") "red")))
 (define match-impl-holes
   (code
    (define-syntax my-match
      (syntax-rules (cons _)
-       [(_ (~var target expr)
-           [(cons (~var pa #,match-pa-hole) (~var pd #,match-pd-hole))
-            (~var body expr)])
+       [(_ target:expr
+           [(cons #,match-pa-hole #,match-pd-hole) body:expr])
         ...]
        ...))))
 (define match-impl-clause
   (code
    (define-syntax my-match
      (syntax-rules (cons _)
-       [(_ (~var target expr)
-           (~var c clause))
+       [(_ target:expr c:clause)
         ...]
        ...))))
 
