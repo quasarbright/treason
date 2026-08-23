@@ -53,23 +53,26 @@
    p))
 
 ;; annotate-box : scene target -> scene
-;; outline box over target, drawn without changing the scene's layout
-(define (annotate-box scene target #:color [c "orange"] #:pad [pad 3])
+;; outline box over target, drawn without changing the scene's layout.
+;; vpad is separate because a code line's box is taller than its glyphs, so
+;; boxes on adjacent lines touch before the horizontal padding is at fault.
+(define (annotate-box scene target #:color [c "orange"] #:pad [pad 3] #:vpad [vpad pad])
   (define-values (x y) (lt-find scene target))
-  (pin-over scene (- x pad) (- y pad)
+  (pin-over scene (- x pad) (- y vpad)
             (frame (blank (+ (pict-width target) (* 2 pad))
-                          (+ (pict-height target) (* 2 pad)))
+                          (+ (pict-height target) (* 2 vpad)))
                    #:color c #:line-width 3)))
 
 ;; annotate-fill : scene (or target (listof target)) -> scene
 ;; color fill behind each target, drawn without changing the scene's layout
-(define (annotate-fill scene target-or-targets #:color [c (light (light "blue"))] #:pad [pad 2])
+(define (annotate-fill scene target-or-targets
+                       #:color [c (light (light "blue"))] #:pad [pad 2] #:vpad [vpad pad])
   (for/fold ([scene scene])
             ([target (if (list? target-or-targets) target-or-targets (list target-or-targets))])
     (define-values (x y) (lt-find scene target))
-    (pin-under scene (- x pad) (- y pad)
+    (pin-under scene (- x pad) (- y vpad)
                (filled-rectangle (+ (pict-width target) (* 2 pad))
-                                 (+ (pict-height target) (* 2 pad))
+                                 (+ (pict-height target) (* 2 vpad))
                                  #:color c #:draw-border? #f))))
 
 ;; ANNOT-COLOR : the fill used to highlight a `~var` annotation
@@ -756,8 +759,8 @@
   (code
    (define (sum nums)
      (my-match nums
-       [(cons num nums)
-        (+ num (sum nums))]
+       [(cons num rest)
+        (+ num (sum rest))]
        [_ 0]))))
 
 ;; A trimmed version of the real match DSL's syntax-spec declaration
@@ -787,25 +790,81 @@
       [p:pat body:racket-expr]
       #,bind-clause))))
 
-;; The binder and the reference share the fill annotate-fill uses elsewhere for
-;; a resolution, so the pair reads as "this num resolves to that num".
+;; The malformed pattern is missing its cdr subpattern, so rest is never bound.
+;; One program, two annotated states, so nothing shifts between the slides:
+;; today both body references look unbound; with binding rules num resolves to
+;; the pattern's binder and rest still doesn't.
 (define match-bad-binder (code num))
-(define match-bad-ref (code num))
-(define match-bad-code
-  (annotate-fill
-   (code
-    (define (sum nums)
-      (my-match nums
-        [#,(framed-code (cons #,match-bad-binder))
-         (+ #,match-bad-ref (sum nums))]
-        [_ 0])))
-   (list match-bad-binder match-bad-ref)))
+(define match-bad-num (code num))
+(define match-bad-rest (code rest))
+(define match-bad-pat (code (cons #,match-bad-binder)))
+(define match-bad-prog
+  (code
+   (define (sum nums)
+     (my-match nums
+       [#,match-bad-pat
+        (+ #,match-bad-num (sum #,match-bad-rest))]
+       [_ 0]))))
+;; Boxes and fills on these slides share one geometry: pad 2 horizontally, and
+;; pulled in vertically just enough that annotations on adjacent lines clear.
+(define MATCH-VPAD -2)
+(define (err-box scene target)
+  (annotate-box scene target #:color "red" #:pad 2 #:vpad MATCH-VPAD))
+(define (res-fill scene targets)
+  (annotate-fill scene targets #:vpad MATCH-VPAD))
+;; the pattern stays boxed in both states — binding rules don't make it well-formed
+(define match-bad-unbound
+  (err-box (err-box (err-box match-bad-prog match-bad-num) match-bad-rest)
+           match-bad-pat))
+(define match-bad-resolved
+  (err-box (err-box (res-fill match-bad-prog
+                              (list match-bad-binder match-bad-num))
+                    match-bad-rest)
+           match-bad-pat))
+
+;; The macro itself. First with holes: there is no annotation for a pattern,
+;; because treason has no notion of one.
+(define match-pa-hole (colorize (tt "???") "red"))
+(define match-pd-hole (colorize (tt "???") "red"))
+(define match-impl-holes
+  (code
+   (define-syntax my-match
+     (syntax-rules (cons _)
+       [(_ (~var target expr)
+           [(cons (~var pa #,match-pa-hole) (~var pd #,match-pd-hole))
+            (~var body expr)])
+        ...]
+       ...))))
+(define match-impl-clause
+  (code
+   (define-syntax my-match
+     (syntax-rules (cons _)
+       [(_ (~var target expr)
+           (~var c clause))
+        ...]
+       ...))))
 
 (slide
  #:title "Binding Declarations"
  #:layout 'top
  (t "A pattern-matching DSL")
  match-use-code)
+
+(slide
+ #:title "Binding Declarations"
+ #:layout 'top
+ (t "What happens with a malformed pattern?")
+ match-bad-unbound
+ (para #:align 'center "SSE on the body, but not the pattern.")
+ (para #:align 'center (code num) "and" (code rest) "are unbound."))
+
+(slide
+ #:title "Binding Declarations"
+ #:layout 'top
+ (t "What the macro looks like")
+ match-impl-holes
+ (para #:align 'center "We can annotate" (code body) "with" (codep expr ",")
+       "but there is no such thing as" (code pat) "(yet!)."))
 
 (slide
  #:title "Binding Declarations"
@@ -824,8 +883,16 @@
 (slide
  #:title "Binding Declarations"
  #:layout 'top
- match-bad-code
- (para "With binding rules, SSE could know that the pattern variables are in scope"))
+ (t "Now the macro can annotate the whole clause")
+ match-impl-clause)
+
+(slide
+ #:title "Binding Declarations"
+ #:layout 'top
+ (t "Back to the bad use")
+ match-bad-resolved
+ (para #:align 'center "SSE can now know out that" (code num) "is bound by"
+       "the pattern."))
 
 ;; ---------------------------------------------------------------------------
 ;; End

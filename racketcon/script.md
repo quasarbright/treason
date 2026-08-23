@@ -155,7 +155,7 @@ For example, let's say we implement our own pattern-matching macro. This isn't j
 What would happen happen if we had a malformed pattern?
 > show malformed example with no highlights. have red boxes around num and rest
 
-We _could_ get some SSE on the clause body since it's an expr, but treason doesn't know what a pattern is, so there's no way for us to get anything like SSE on the pattern itself. And our match macro also has its own binding rules: We want all of the variables in the pattern to be bound in the body. Treason doesn't know about these rules, so SSE would see the pattern variable references in the body as unbound since it'll expand the body out of context.
+We _could_ get some SSE on the clause body since it's an expr, but treason doesn't know what a pattern is, so there's no way for us to get anything like SSE on the pattern itself. And our match macro also has its own binding rules that treason doesn't know about: We want all of the variables in the pattern to be bound in the body. But Treason doesn't know this, so SSE would see the pattern variable references in the body as unbound since it'll expand the body out of context without those bindings in scope.
 
 Here's what an implementation of this match macro would look like
 
@@ -171,10 +171,10 @@ We can have ~var expr on the body, but there is nothing we can put for pa and pd
 
 In order to tell treason what a pattern is and what the binding rules are for patterns, we could use something like Michael Ballantyne's syntax-spec.
 
-With syntax-spec, we can declare the grammar for our pattern matching macro. So a pattern is either a cons, a variable, or a wildcard pattern. And a clause has a pattern or an expr We can also add binding rules to tell the expander that all pattern variables are exported from the pattern and bound in the body.
+With syntax-spec, we can declare the grammar for our pattern matching macro. So a pattern is either a cons, a variable, or a wildcard pattern. And a clause has a pattern and a body expr. We can also add binding rules to tell the expander that all pattern variables are exported from the pattern and bound in the body. All of this information can be used to get SSE on our patterns and have it know about our binding rules!
 > existing syntax-spec slide
 
-Now we could rewrite our macro to annotate the c with a clause, and treason will know what that means.
+We can make this happen rewriting our macro to use the clause annotation, and then Treason would know all about our DSL's grammar and binding rules.
 
 ```racket
 (define-syntax my-match
@@ -184,14 +184,16 @@ Now we could rewrite our macro to annotate the c with a clause, and treason will
     ...))
 ```
 
-With this, if we go back to our bad use, SSE would be able to figure out that num in the body should be bound by the pattern.
+Now if we go back to our bad use, SSE would be able to figure out that num in the body should be bound by the pattern.
 > show slide with num resolving but rest still unbound with red box
+
+SSE is already a novel improvement to the IDE experience of macro-extensible languages, but syntax spec integration would take it even farther and really enable us to make services in macro uses on par with what's possible for the core language.
 
 In general, the more information available to the expander before a macro expands, the better the IDE experience can be.
 
 **▶ Acknowledgements**
 
-Before I go, I want to thank Michael Ballantyne for making Treason with me, helping me develop this talk, and letting me help him make syntax spec. And of course, thank you to the Racket community for putting this event together and having me here.
+That's all I have, but before I go, I want to thank Michael Ballantyne for making Treason with me, helping me develop this talk, and letting me help him make syntax spec. And of course, thank you to the Racket community for putting this event together and having me here.
 
 **▶ Treason (links + QR)**
 

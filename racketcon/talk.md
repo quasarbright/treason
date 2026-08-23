@@ -226,6 +226,6 @@ notes with michael going over slides
 - [x] do the dimming thing when you show the syntax spec. show grammar first then binding rules
 - [x] emphasize the importance of grammar. treason knows what `expr` is, but not `pat`. but treason doesn't know how binding works for pat, so we need a binding declaration
 - [x] call out that num resolves. maybe draw an arrow. emphasize "even though we can't expand match"
-- [ ] show problem of no ss before showing ss.
-- [ ] say rest in cdr, not nums
+- [x] show problem of no ss before showing ss.
+- [x] say rest in cdr, not nums
 - [ ] finish. slides aren't done and script isn't done, even for some done slides
