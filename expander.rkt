@@ -13,15 +13,16 @@
 ;;
 ;; expr := number
 ;;       | var
-;;       | (block def ... expr) ;; must end in an expression
+;;       | (block def-or-expr ... expr) ;; must end in an expression
 ;;       | (let ([var expr]) expr)
 ;;       | (let-syntax ([mname macrot]) expr)
 ;;       | (mname ustx ...)
-;; def := (define-syntax mname macrot)
-;;      | (define var expr)
-;;      | (begin def ...)
-;;      | (#%expression expr)
-;;      | (mname ustx ...)
+;; def-or-expr := expr
+;;              | (define-syntax mname macrot)
+;;              | (define var expr)
+;;              | (begin def-or-expr ...)
+;;              | (#%expression expr)
+;;              | (mname ustx ...)
 ;;
 ;; macrot := (syntax-rules (id ...) [(_ pat ...) tmpl] ...)
 ;;
@@ -390,20 +391,22 @@
 ;; to either a definition or an expression.
 ;; surface and expanded are index-aligned: both passes map over the same list.
 (define (check-block-tail! expr surface expanded)
-  (unless (and (pair? expanded) (xdef-ends-in-expression? (last expanded)))
+  (unless (xdefs-end-in-expression? expanded)
     (record-stx-error!
      (stx-error 'block "block must end in an expression" expr
                 (and (pair? surface) (last surface))))))
 
-;; xdef-ends-in-expression? : XDef -> Boolean
-;; Does this definition, spliced into a block body, end in an expression?
+;; xdefs-end-in-expression? : [Listof XDef] -> Boolean
+;; Does this block body end in an expression? An empty body does not.
+;; A begin is checked through its own body, since it splices into this one.
 ;; An error node counts as an expression so a broken tail is not reported twice.
-(define (xdef-ends-in-expression? def)
-  (match def
-    [(? stx-error?) #t]
-    [`(#%expression ,_) #t]
-    [`(begin ,defs ...) (and (pair? defs) (xdef-ends-in-expression? (last defs)))]
-    [_ #f]))
+(define (xdefs-end-in-expression? defs)
+  (and (pair? defs)
+       (match (last defs)
+         [(? stx-error?) #t]
+         [`(#%expression ,_) #t]
+         [`(begin ,defs^ ...) (xdefs-end-in-expression? defs^)]
+         [_ #f])))
 
 ;; ============================================================
 ;; Definition Expansion (Two-Pass)
