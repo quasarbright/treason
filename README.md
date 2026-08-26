@@ -28,7 +28,7 @@ expr := number
       | var
       | (let ([var expr]) expr)
       | (let-syntax ([name macrot]) expr)
-      | (block def-or-expr ...)
+      | (block def-or-expr ... expr)   ; must end in an expression
       | (name expr ...)          ; macro application
 
 def-or-expr := expr

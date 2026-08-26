@@ -13,15 +13,16 @@
 ;;
 ;; expr := number
 ;;       | var
-;;       | (block def ...)
+;;       | (block def-or-expr ... expr) ;; must end in an expression
 ;;       | (let ([var expr]) expr)
 ;;       | (let-syntax ([mname macrot]) expr)
 ;;       | (mname ustx ...)
-;; def := (define-syntax mname macrot)
-;;      | (define var expr)
-;;      | (begin def ...)
-;;      | (#%expression expr)
-;;      | (mname ustx ...)
+;; def-or-expr := expr
+;;              | (define-syntax mname macrot)
+;;              | (define var expr)
+;;              | (begin def-or-expr ...)
+;;              | (#%expression expr)
+;;              | (mname ustx ...)
 ;;
 ;; macrot := (syntax-rules (id ...) [(_ pat ...) tmpl] ...)
 ;;
@@ -295,7 +296,8 @@
        [(var-binding? binding) (var-binding-name binding)]
        [(keyword-binding? binding) (identifier-symbol id)]
        [(stx-error? binding) binding]
-       [else (stx-error 'expand-expr "unexpected binding type" expr #f)])]
+       [else (record-and-return-stx-error
+              (stx-error 'expand-expr "unexpected binding type" expr #f))])]
     [(stx-quote (,head-stx . ,_))
      #:when (identifier? head-stx)
      (define binding (scope-resolve scp head-stx))
@@ -307,6 +309,7 @@
         (define scp^ (new-scope scp))
         (define defs^ (expand-defs-pass1 defs scp^))
         (define defs^^ (expand-defs-pass2 defs^ scp^))
+        (check-block-tail! expr defs defs^^)
         `(block . ,defs^^)]
        ;; let
        [(and (keyword-binding? binding)
@@ -372,11 +375,38 @@
         binding]
        ;; variable in head position - not callable
        [(var-binding? binding)
-        (stx-error (identifier-symbol head-stx) "not a procedure or syntax" expr head-stx)]
-       [else (stx-error #f "unexpected form" expr head-stx)])]
+        (record-and-return-stx-error
+         (stx-error (identifier-symbol head-stx) "not a procedure or syntax" expr head-stx))]
+       [else (record-and-return-stx-error
+              (stx-error #f "unexpected form" expr head-stx))])]
     ;; Non-identifier in head position
     [(stx-quote (,head-stx . ,_))
-     (stx-error #f "not a procedure or syntax" expr head-stx)]))
+     (record-and-return-stx-error
+      (stx-error #f "not a procedure or syntax" expr head-stx))]))
+
+;; check-block-tail! : Stx [Listof Stx] [Listof XDef] -> Void
+;; Records a stx-error unless the block's last form is an expression.
+;; A block is an expression, so it must end in one for its value to be defined.
+;; This is checked after expansion because a macro in tail position may expand
+;; to either a definition or an expression.
+;; surface and expanded are index-aligned: both passes map over the same list.
+(define (check-block-tail! expr surface expanded)
+  (unless (xdefs-end-in-expression? expanded)
+    (record-stx-error!
+     (stx-error 'block "block must end in an expression" expr
+                (and (pair? surface) (last surface))))))
+
+;; xdefs-end-in-expression? : [Listof XDef] -> Boolean
+;; Does this block body end in an expression? An empty body does not.
+;; A begin is checked through its own body, since it splices into this one.
+;; An error node counts as an expression so a broken tail is not reported twice.
+(define (xdefs-end-in-expression? defs)
+  (and (pair? defs)
+       (match (last defs)
+         [(? stx-error?) #t]
+         [`(#%expression ,_) #t]
+         [`(begin ,defs^ ...) (xdefs-end-in-expression? defs^)]
+         [_ #f])))
 
 ;; ============================================================
 ;; Definition Expansion (Two-Pass)
@@ -1146,6 +1176,14 @@
   (record-stx-error! err)
   (raise err))
 
+;; record-and-return-stx-error : stx-error? -> stx-error?
+;; Records an error and returns it for embedding in the expanded output.
+;; Use this for errors that become part of the expanded tree rather than
+;; unwinding, so that they still reach the diagnostics table.
+(define (record-and-return-stx-error err)
+  (record-stx-error! err)
+  err)
+
 ;; stx-error? -> void?
 (define (record-stx-error! err)
   (when (current-expander-state)
@@ -1798,9 +1836,100 @@
          (syntax-rules ()
            [(m 1 (~var e expr)) 1]))
        (m 2 (let ([q 1]) q))
-       (define x 2)))
+       (define x 2)
+       ;; the trailing expression keeps this block well-formed; the definition
+       ;; after the macro call is what makes pass 2 the earliest safe time to
+       ;; expand the carried subexpressions
+       x))
    (define result (analyze! (list (sexpr->syntax sexp))))
    (check-equal? (length (expander-result-errors result)) 1))
+
+  ;; ----------------------------------------
+  ;; Block tail rule
+  ;; ----------------------------------------
+
+  (test-case
+   "a block ending in an expression is well-formed"
+   (define result (analyze! (list (sexpr->syntax '(block (define x 1) x)))))
+   (check-equal? (expander-result-errors result) (list)))
+
+  (test-case
+   "a block ending in a definition is an error"
+   (define result (analyze! (list (sexpr->syntax '(block 1 (define x 1))))))
+   (check-equal? (map stx-error-message (expander-result-errors result))
+                 (list "block must end in an expression")))
+
+  (test-case
+   "an empty block is an error"
+   (define result (analyze! (list (sexpr->syntax '(block)))))
+   (check-equal? (map stx-error-message (expander-result-errors result))
+                 (list "block must end in an expression")))
+
+  (test-case
+   "a block ending in a begin that ends in an expression is well-formed"
+   (define result (analyze! (list (sexpr->syntax '(block (begin (define x 1) x))))))
+   (check-equal? (expander-result-errors result) (list)))
+
+  (test-case
+   "a block ending in a begin that ends in a definition is an error"
+   (define result (analyze! (list (sexpr->syntax '(block 1 (begin (define x 1)))))))
+   (check-equal? (map stx-error-message (expander-result-errors result))
+                 (list "block must end in an expression")))
+
+  (test-case
+   "the tail is checked after expansion: a macro expanding to a definition is an error"
+   ;; the surface tail is a macro call, so only the expanded form knows whether
+   ;; this block ends in an expression
+   (define sexp '(block (define-syntax m (syntax-rules () [(m) (define y 1)])) (m)))
+   (define result (analyze! (list (sexpr->syntax sexp))))
+   (check-equal? (map stx-error-message (expander-result-errors result))
+                 (list "block must end in an expression")))
+
+  (test-case
+   "the tail is checked after expansion: a macro expanding to an expression is well-formed"
+   (define sexp '(block (define-syntax m (syntax-rules () [(m) 1])) (m)))
+   (define result (analyze! (list (sexpr->syntax sexp))))
+   (check-equal? (expander-result-errors result) (list)))
+
+  (test-case
+   "a broken tail is not reported twice"
+   ;; the tail is already an error node; adding a block-tail error would blame
+   ;; the same form a second time
+   (define result (analyze! (list (sexpr->syntax '(block (define x 1) (define))))))
+   (check-equal? (length (expander-result-errors result)) 1))
+
+  (test-case
+   "top-level forms are a module body, not a block: definitions may come last"
+   (define result (analyze! (list (sexpr->syntax '(define x 1)))))
+   (check-equal? (expander-result-errors result) (list)))
+
+  (test-case
+   "an empty program is well-formed"
+   (define result (analyze! (list)))
+   (check-equal? (expander-result-errors result) (list)))
+
+  ;; ----------------------------------------
+  ;; Errors embedded in the expanded output are recorded
+  ;; ----------------------------------------
+
+  (test-case
+   "a variable in head position is recorded"
+   (define result (analyze! (list (sexpr->syntax '(block (define f 1) (f 2))))))
+   (check-equal? (map stx-error-message (expander-result-errors result))
+                 (list "not a procedure or syntax")))
+
+  (test-case
+   "a non-identifier in head position is recorded"
+   (define result (analyze! (list (sexpr->syntax '((1 2))))))
+   (check-equal? (map stx-error-message (expander-result-errors result))
+                 (list "not a procedure or syntax")))
+
+  (test-case
+   "a macro used as a variable reference is recorded"
+   (define sexp '(let-syntax ([m (syntax-rules () [(m) 1])]) m))
+   (define result (analyze! (list (sexpr->syntax sexp))))
+   (check-equal? (map stx-error-message (expander-result-errors result))
+                 (list "unexpected binding type")))
 
   ;; ----------------------------------------
   ;; Ellipsis tests
