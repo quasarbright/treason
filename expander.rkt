@@ -680,8 +680,8 @@
   (define parts (split-annotated-id annotated))
   (check-equal? (map identifier-symbol parts) '(body expr))
   ;; each part spans only its own text, not the whole token
-  (check-equal? (stx-span (first parts)) (span (loc "test" 0 0) (loc "test" 0 4)))
-  (check-equal? (stx-span (second parts)) (span (loc "test" 0 5) (loc "test" 0 9)))
+  (check-equal? (stx-span (first parts)) (span (loc "test" 0 0 0) (loc "test" 0 4 4)))
+  (check-equal? (stx-span (second parts)) (span (loc "test" 0 5 5) (loc "test" 0 9 9)))
   ;; the marks of the token carry over to both parts
   (check-equal? (map stx-marks parts) (list (stx-marks annotated) (stx-marks annotated)))
   ;; identifiers that are not annotations
@@ -707,8 +707,12 @@
 
 ;; loc-shift : Loc Natural -> Loc
 ;; Moves a location forward by n characters within its line.
+;; The position moves by the same n, since staying within a line means the
+;; column and the offset advance together.
 (define (loc-shift lc n)
-  (struct-copy loc lc [column (+ (loc-column lc) n)]))
+  (struct-copy loc lc
+               [column (+ (loc-column lc) n)]
+               [position (and (loc-position lc) (+ (loc-position lc) n))]))
 
 ;; ============================================================
 ;; Pattern Variable LSP Resolution
@@ -1457,22 +1461,22 @@
   (define pattern-source
     "(let-syntax ([m (syntax-rules () [(_ q:expr) (let ([a q]) a)])]) (m 5))")
   (define pattern-result (analyze! (string->stxs "test" pattern-source)))
-  (define annotated-token (find-node-at-position pattern-result (loc "test" 0 37)))
+  (define annotated-token (find-node-at-position pattern-result (loc "test" 0 37 37)))
   (check-equal? (identifier-symbol annotated-token) 'q:expr)
   ;; on the pattern variable's name: narrowed to the name, which is the binding site
-  (let ([refined (refine-annotated-node pattern-result annotated-token (loc "test" 0 37))])
+  (let ([refined (refine-annotated-node pattern-result annotated-token (loc "test" 0 37 37))])
     (check-equal? (identifier-symbol refined) 'q)
-    (check-equal? (stx-span refined) (span (loc "test" 0 37) (loc "test" 0 38))))
+    (check-equal? (stx-span refined) (span (loc "test" 0 37 37) (loc "test" 0 38 38))))
   ;; on the syntax class: nothing is recorded there, so the token is left alone
-  (check-equal? (refine-annotated-node pattern-result annotated-token (loc "test" 0 40))
+  (check-equal? (refine-annotated-node pattern-result annotated-token (loc "test" 0 40 40))
                 annotated-token)
   ;; an ordinary variable whose name contains a colon is left alone: it is
   ;; recorded under its whole span, not under either part
   (define variable-source "(let ([a:b 1]) a:b)")
   (define variable-result (analyze! (string->stxs "test" variable-source)))
-  (define variable-token (find-node-at-position variable-result (loc "test" 0 15)))
+  (define variable-token (find-node-at-position variable-result (loc "test" 0 15 15)))
   (check-equal? (identifier-symbol variable-token) 'a:b)
-  (check-equal? (refine-annotated-node variable-result variable-token (loc "test" 0 15))
+  (check-equal? (refine-annotated-node variable-result variable-token (loc "test" 0 15 15))
                 variable-token))
 
 ;; recorded-span? : ExpanderResult Span -> Boolean
@@ -1617,9 +1621,9 @@
   (require "reader.rkt")
 
   ;; cursor-identifier? tests
-  (let* ([zero-loc (loc "test.tsn" 0 5)]
+  (let* ([zero-loc (loc "test.tsn" 0 5 5)]
          [zero-span (span zero-loc zero-loc)]
-         [nonzero-span (span (loc "test.tsn" 0 5) (loc "test.tsn" 0 10))])
+         [nonzero-span (span (loc "test.tsn" 0 5 5) (loc "test.tsn" 0 10 10))])
     ;; A cursor produced by make-cursor satisfies cursor-identifier?
     (check-true (cursor-identifier? (make-cursor zero-loc))
                 "make-cursor produces a cursor-identifier?")
@@ -1641,7 +1645,7 @@
     ;; When cursor is on an identifier, it should be replaced
     (define source "(define x 1)\nx")
     (define syns (string->stxs "test" source))
-    (define pos (loc "test" 1 0))  ; On the 'x' at line 1
+    (define pos (loc "test" 1 0 #f))  ; On the 'x' at line 1
     (define cursor (make-cursor pos))
     (define with-cursor (insert-or-replace-cursor syns pos cursor))
     ;; Should have 2 forms, second should be the cursor
@@ -1652,7 +1656,7 @@
     ;; When cursor is after all forms, insert as new top-level form
     (define source "(define x 1)\n(define y 2)")
     (define syns (string->stxs "test" source))
-    (define pos (loc "test" 1 12))  ; After closing paren of second form
+    (define pos (loc "test" 1 12 #f))  ; After closing paren of second form
     (define cursor (make-cursor pos))
     (define with-cursor (insert-or-replace-cursor syns pos cursor))
     ;; Should have 3 forms (2 defines + cursor)
@@ -1663,7 +1667,7 @@
     ;; When cursor is between forms, insert at that position
     (define source "(define x 1)\n\n(define y 2)")
     (define syns (string->stxs "test" source))
-    (define pos (loc "test" 1 0))  ; On the empty line
+    (define pos (loc "test" 1 0 #f))  ; On the empty line
     (define cursor (make-cursor pos))
     (define with-cursor (insert-or-replace-cursor syns pos cursor))
     ;; Should have 3 forms: first define, cursor, second define
@@ -1674,7 +1678,7 @@
     ;; When cursor is before all forms, insert at the beginning
     (define source "(define x 1)")
     (define syns (string->stxs "test" source))
-    (define pos (loc "test" 0 0))  ; At opening paren
+    (define pos (loc "test" 0 0 0))  ; At opening paren
     (define cursor (make-cursor pos))
     (define with-cursor (insert-or-replace-cursor syns pos cursor))
     ;; Should have 2 forms: cursor, then define
@@ -1685,7 +1689,7 @@
     ;; When cursor is on an identifier inside a list, replace it
     (define source "(let ([x 1]) x)")
     (define syns (string->stxs "test" source))
-    (define pos (loc "test" 0 13))  ; On the 'x' in the body
+    (define pos (loc "test" 0 13 13))  ; On the 'x' in the body
     (define cursor (make-cursor pos))
     (define with-cursor (insert-or-replace-cursor syns pos cursor))
     ;; Should have the let with cursor replacing the x in the body
@@ -1696,7 +1700,7 @@
     ;; When cursor is inside a list but not on an identifier, insert it
     (define source "(let () )")
     (define syns (string->stxs "test" source))
-    (define pos (loc "test" 0 8))  ; Inside the empty body, before closing paren
+    (define pos (loc "test" 0 8 8))  ; Inside the empty body, before closing paren
     (define cursor (make-cursor pos))
     (define with-cursor (insert-or-replace-cursor syns pos cursor))
     ;; Should have the let with cursor inserted in the body
