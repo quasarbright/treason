@@ -103,6 +103,20 @@
 ;; stx : Stx - the syntax where the error occurred
 ;; sub-stx : (or/c Stx #f) - more specific location within stx, if any
 
+;; stx-error-span : StxError -> (or/c Span #f)
+;; Where the error should be reported: the most specific syntax it names.
+(define (stx-error-span err)
+  (match err
+    [(stx-error _ _ expr #f) (stx-span expr)]
+    [(stx-error _ _ _ sub-expr) (stx-span sub-expr)]))
+
+;; stx-error-diagnostic-message : StxError -> String
+;; The error's message, naming the form that detected it when there is one.
+(define (stx-error-diagnostic-message err)
+  (match err
+    [(stx-error #f message _ _) message]
+    [(stx-error who message _ _) (format "~a: ~a" who message)]))
+
 ;; ============================================================
 ;; Tests
 ;; ============================================================
