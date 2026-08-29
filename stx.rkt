@@ -42,12 +42,35 @@
 ;; Represents a range of source code text
 
 ;; A Loc is a
-(struct loc [source line column] #:transparent)
+(struct loc [source line column position] #:transparent)
 ;; where
 ;; source identifies the source, often a file path
 ;; line is a natural representing line number, zero-indexed
 ;; col is a natural representing the offset in that line, zero-indexed
+;; position is a (or/c Natural #f): the offset from the start of the source,
+;;   zero-indexed, counted in characters
 ;; Represents a location in a program source
+;;
+;; Locations from the reader always have a position. It is #f only for a
+;; location that did not come from reading a source, such as an editor cursor,
+;; which arrives as a line and column with no offset. Line and column are what
+;; locations are ordered and compared by; position exists because a Racket
+;; srcloc needs an offset and a width, which line and column cannot supply.
+
+;; span->srcloc : Span -> srcloc?
+;; Converts a span to a Racket source location, so that code compiled from
+;; treason can report errors against treason source. Racket counts lines from
+;; one and positions from one, and measures a span as a width in characters.
+;; The position and width are #f for a span whose locations carry no position.
+(define (span->srcloc spn)
+  (define start (span-start spn))
+  (define position (loc-position start))
+  (define end-position (loc-position (span-end spn)))
+  (srcloc (loc-source start)
+          (add1 (loc-line start))
+          (loc-column start)
+          (and position (add1 position))
+          (and position end-position (- end-position position))))
 
 ;; ============================================================
 ;; Stx Accessors
@@ -79,3 +102,21 @@
 ;; message : String - error description
 ;; stx : Stx - the syntax where the error occurred
 ;; sub-stx : (or/c Stx #f) - more specific location within stx, if any
+
+;; ============================================================
+;; Tests
+;; ============================================================
+
+(module+ test
+  (require rackunit)
+
+  (test-case
+   "a span becomes a Racket source location"
+   ;; "(f x)\n(g)" — the (g) form starts at offset 6 and is 3 characters wide
+   (define spn (span (loc "p.tsn" 1 0 6) (loc "p.tsn" 1 3 9)))
+   (check-equal? (span->srcloc spn) (srcloc "p.tsn" 2 0 7 3)))
+
+  (test-case
+   "a span whose locations carry no position still locates a line and column"
+   (define spn (span (loc "p.tsn" 1 0 #f) (loc "p.tsn" 1 3 #f)))
+   (check-equal? (span->srcloc spn) (srcloc "p.tsn" 2 0 #f #f))))

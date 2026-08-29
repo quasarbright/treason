@@ -146,6 +146,7 @@
 (define (parse-list)
   (define start-line (line))
   (define start-col (col))
+  (define start-pos (pos))
   (define open-char (current-char))
   (define close-char (if (char=? open-char #\() #\) #\]))
   
@@ -157,13 +158,13 @@
     (cond
       [(at-end?)
        (parse-error! "unexpected end of input in list"
-                     (span (loc (source) start-line start-col)
-                           (loc (source) (line) (col))))]
+                     (span (loc (source) start-line start-col start-pos)
+                           (loc (source) (line) (col) (pos))))]
       [(char=? (current-char) close-char)
        ;; End of list
        (advance!)
-       (define sp (span (loc (source) start-line start-col)
-                        (loc (source) (line) (col))))
+       (define sp (span (loc (source) start-line start-col start-pos)
+                        (loc (source) (line) (col) (pos))))
        (define e (reverse elements))
        (stx e sp '())]
       [(and (or (char=? (current-char) #\))
@@ -171,8 +172,8 @@
             (not (char=? (current-char) close-char)))
        ;; Mismatched closing delimiter — raise error to avoid infinite loop
        (parse-error! (format "unexpected ~a, expected ~a" (current-char) close-char)
-                     (span (loc (source) (line) (col))
-                           (loc (source) (line) (add1 (col)))))]
+                     (span (loc (source) (line) (col) (pos))
+                           (loc (source) (line) (add1 (col)) (add1 (pos)))))]
       [(char=? (current-char) #\.)
        ;; Check if this is a dot for improper list
        (define next-pos (add1 (pos)))
@@ -187,8 +188,8 @@
            (let ()
              (when (null? elements)
                (parse-error! "unexpected dot at beginning of list"
-                             (span (loc (source) (line) (col))
-                                   (loc (source) (line) (add1 (col))))))
+                             (span (loc (source) (line) (col) (pos))
+                                   (loc (source) (line) (add1 (col)) (add1 (pos))))))
              (advance!)  ; skip the dot
              (skip-whitespace!)
              (define tail-stx (parse))
@@ -196,11 +197,11 @@
              (unless (and (not (at-end?))
                           (char=? (current-char) close-char))
                (parse-error! (format "expected ~a after dotted tail" close-char)
-                             (span (loc (source) start-line start-col)
-                                   (loc (source) (line) (col)))))
+                             (span (loc (source) start-line start-col start-pos)
+                                   (loc (source) (line) (col) (pos)))))
              (advance!)  ; skip closing paren
-             (define sp (span (loc (source) start-line start-col)
-                              (loc (source) (line) (col))))
+             (define sp (span (loc (source) start-line start-col start-pos)
+                              (loc (source) (line) (col) (pos))))
              (define e (build-improper-list-stx (reverse elements) tail-stx))
              (stx e sp '()))
            ;; It's an atom starting with dot
@@ -245,13 +246,13 @@
   (define atom-str (substring (text) start-pos (pos)))
   (when (string=? atom-str "")
     (parse-error! "unexpected delimiter, expected atom"
-                  (span (loc (source) start-line start-col)
-                        (loc (source) (line) (col)))))
+                  (span (loc (source) start-line start-col start-pos)
+                        (loc (source) (line) (col) (pos)))))
   (define atom-val
     (or (string->number atom-str)
         (string->symbol atom-str)))
-  (define sp (span (loc (source) start-line start-col)
-                   (loc (source) (line) (col))))
+  (define sp (span (loc (source) start-line start-col start-pos)
+                   (loc (source) (line) (col) (pos))))
   (stx atom-val sp '()))
 
 ;; -> stx?
@@ -259,39 +260,41 @@
 (define (parse-hash)
   (define start-line (line))
   (define start-col (col))
+  (define start-pos (pos))
   
   (cond
     [(>= (add1 (pos)) (string-length (text)))
      (parse-error! "unexpected end of input after #"
-                   (span (loc (source) start-line start-col)
-                         (loc (source) (line) (col))))]
+                   (span (loc (source) start-line start-col start-pos)
+                         (loc (source) (line) (col) (pos))))]
     [else
      (define next-ch (string-ref (text) (add1 (pos))))
      (cond
        [(char=? next-ch #\t)
         (advance!)  ; skip #
         (advance!)  ; skip t
-        (define sp (span (loc (source) start-line start-col)
-                         (loc (source) (line) (col))))
+        (define sp (span (loc (source) start-line start-col start-pos)
+                         (loc (source) (line) (col) (pos))))
         (stx #t sp '())]
        [(char=? next-ch #\f)
         (advance!)  ; skip #
         (advance!)  ; skip f
-        (define sp (span (loc (source) start-line start-col)
-                         (loc (source) (line) (col))))
+        (define sp (span (loc (source) start-line start-col start-pos)
+                         (loc (source) (line) (col) (pos))))
         (stx #f sp '())]
        [(char=? next-ch #\%)
         ;; Parse #%identifier (e.g., #%expression)
         (parse-atom)]
        [else
         (parse-error! (format "unsupported # form: #~a" next-ch)
-                      (span (loc (source) start-line start-col)
-                            (loc (source) (line) (col))))])]))
+                      (span (loc (source) start-line start-col start-pos)
+                            (loc (source) (line) (col) (pos))))])]))
 ;; -> stx?
 ;; Parses 'expr as (quote expr).
 (define (parse-quote)
   (define start-line (line))
   (define start-col (col))
+  (define start-pos (pos))
 
   ;; Skip the quote character
   (advance!)
@@ -299,13 +302,13 @@
   (define inner (parse))
   (when (eof-object? inner)
     (parse-error! "unexpected end of input after quote"
-                  (span (loc (source) start-line start-col)
-                        (loc (source) (line) (col)))))
-  (define sp (span (loc (source) start-line start-col)
-                   (loc (source) (line) (col))))
+                  (span (loc (source) start-line start-col start-pos)
+                        (loc (source) (line) (col) (pos)))))
+  (define sp (span (loc (source) start-line start-col start-pos)
+                   (loc (source) (line) (col) (pos))))
   (define quote-sym (stx 'quote
-                         (span (loc (source) start-line start-col)
-                               (loc (source) start-line (add1 start-col)))
+                         (span (loc (source) start-line start-col start-pos)
+                               (loc (source) start-line (add1 start-col) (add1 start-pos)))
                          '()))
   (define e (list quote-sym inner))
   (stx e sp '()))
@@ -365,27 +368,27 @@
   ;; Test simple symbol
   (check-stx-equal?
    (string->stx 'test "x")
-   (stx 'x (span (loc 'test 0 0) (loc 'test 0 1)) '()))
+   (stx 'x (span (loc 'test 0 0 0) (loc 'test 0 1 1)) '()))
   
   ;; Test simple list (as flat Racket list of stx elements)
   (check-stx-equal?
    (string->stx 'test "(+ 1 2)")
-   (stx (list (stx '+ (span (loc 'test 0 1) (loc 'test 0 2)) '())
-              (stx 1 (span (loc 'test 0 3) (loc 'test 0 4)) '())
-              (stx 2 (span (loc 'test 0 5) (loc 'test 0 6)) '()))
-        (span (loc 'test 0 0) (loc 'test 0 7)) '()))
+   (stx (list (stx '+ (span (loc 'test 0 1 1) (loc 'test 0 2 2)) '())
+              (stx 1 (span (loc 'test 0 3 3) (loc 'test 0 4 4)) '())
+              (stx 2 (span (loc 'test 0 5 5) (loc 'test 0 6 6)) '()))
+        (span (loc 'test 0 0 0) (loc 'test 0 7 7)) '()))
   
   ;; Test dotted pair (improper list)
   (check-stx-equal?
    (string->stx "test.tsn" "(foo . bar)")
-   (stx (cons (stx 'foo (span (loc "test.tsn" 0 1) (loc "test.tsn" 0 4)) '())
-              (stx 'bar (span (loc "test.tsn" 0 7) (loc "test.tsn" 0 10)) '()))
-        (span (loc "test.tsn" 0 0) (loc "test.tsn" 0 11)) '()))
+   (stx (cons (stx 'foo (span (loc "test.tsn" 0 1 1) (loc "test.tsn" 0 4 4)) '())
+              (stx 'bar (span (loc "test.tsn" 0 7 7) (loc "test.tsn" 0 10 10)) '()))
+        (span (loc "test.tsn" 0 0 0) (loc "test.tsn" 0 11 11)) '()))
   
   ;; Test empty list
   (check-stx-equal?
    (string->stx 'test "()")
-   (stx '() (span (loc 'test 0 0) (loc 'test 0 2)) '()))
+   (stx '() (span (loc 'test 0 0 0) (loc 'test 0 2 2)) '()))
 
   ;; Test eof
   (check-equal?
@@ -396,32 +399,32 @@
   ;; Test nested list
   (check-stx-equal?
    (string->stx 'test "(a (b c))")
-   (stx (list (stx 'a (span (loc 'test 0 1) (loc 'test 0 2)) '())
-              (stx (list (stx 'b (span (loc 'test 0 4) (loc 'test 0 5)) '())
-                         (stx 'c (span (loc 'test 0 6) (loc 'test 0 7)) '()))
-                   (span (loc 'test 0 3) (loc 'test 0 8)) '()))
-        (span (loc 'test 0 0) (loc 'test 0 9)) '()))
+   (stx (list (stx 'a (span (loc 'test 0 1 1) (loc 'test 0 2 2)) '())
+              (stx (list (stx 'b (span (loc 'test 0 4 4) (loc 'test 0 5 5)) '())
+                         (stx 'c (span (loc 'test 0 6 6) (loc 'test 0 7 7)) '()))
+                   (span (loc 'test 0 3 3) (loc 'test 0 8 8)) '()))
+        (span (loc 'test 0 0 0) (loc 'test 0 9 9)) '()))
   
   ;; Test booleans
   (check-stx-equal?
    (string->stx 'test "(#t #f)")
-   (stx (list (stx #t (span (loc 'test 0 1) (loc 'test 0 3)) '())
-              (stx #f (span (loc 'test 0 4) (loc 'test 0 6)) '()))
-        (span (loc 'test 0 0) (loc 'test 0 7)) '()))
+   (stx (list (stx #t (span (loc 'test 0 1 1) (loc 'test 0 3 3)) '())
+              (stx #f (span (loc 'test 0 4 4) (loc 'test 0 6 6)) '()))
+        (span (loc 'test 0 0 0) (loc 'test 0 7 7)) '()))
   
   ;; Test multiline
   (check-stx-equal?
    (string->stx 'test "(a\nb)")
-   (stx (list (stx 'a (span (loc 'test 0 1) (loc 'test 0 2)) '())
-              (stx 'b (span (loc 'test 1 0) (loc 'test 1 1)) '()))
-        (span (loc 'test 0 0) (loc 'test 1 2)) '()))
+   (stx (list (stx 'a (span (loc 'test 0 1 1) (loc 'test 0 2 2)) '())
+              (stx 'b (span (loc 'test 1 0 3) (loc 'test 1 1 4)) '()))
+        (span (loc 'test 0 0 0) (loc 'test 1 2 5)) '()))
   
   ;; Test comments
   (check-stx-equal?
    (string->stx 'test "(a ; comment\nb)")
-   (stx (list (stx 'a (span (loc 'test 0 1) (loc 'test 0 2)) '())
-              (stx 'b (span (loc 'test 1 0) (loc 'test 1 1)) '()))
-        (span (loc 'test 0 0) (loc 'test 1 2)) '()))
+   (stx (list (stx 'a (span (loc 'test 0 1 1) (loc 'test 0 2 2)) '())
+              (stx 'b (span (loc 'test 1 0 13) (loc 'test 1 1 14)) '()))
+        (span (loc 'test 0 0 0) (loc 'test 1 2 15)) '()))
 
   ;; ============================================================
   ;; Quote parsing
@@ -433,13 +436,13 @@
     (check-match syn (stx (list (stx 'quote _ _) (stx 'x _ _)) _ _))
     ;; Span covers the whole 'x form
     (check-equal? (stx-span syn)
-                  (span (loc 'test 0 0) (loc 'test 0 2)))
+                  (span (loc 'test 0 0 0) (loc 'test 0 2 2)))
     ;; Quote symbol span covers just the ' character
     (check-equal? (stx-span (car (stx-e syn)))
-                  (span (loc 'test 0 0) (loc 'test 0 1)))
+                  (span (loc 'test 0 0 0) (loc 'test 0 1 1)))
     ;; Inner symbol span covers just x
     (check-equal? (stx-span (cadr (stx-e syn)))
-                  (span (loc 'test 0 1) (loc 'test 0 2))))
+                  (span (loc 'test 0 1 1) (loc 'test 0 2 2))))
 
   ;; Test quote of list: '(a b) -> (quote (a b))
   (let ([syn (string->stx 'test "'(a b)")])
@@ -448,7 +451,7 @@
                       _ _))
     ;; Outer span covers '(a b)
     (check-equal? (stx-span syn)
-                  (span (loc 'test 0 0) (loc 'test 0 6))))
+                  (span (loc 'test 0 0 0) (loc 'test 0 6 6))))
 
   ;; Test quote of number: '42 -> (quote 42)
   (check-match (string->stx 'test "'42")
@@ -461,14 +464,14 @@
   ;; Test bracket list: [a b] parsed same as (a b)
   (check-stx-equal?
    (string->stx 'test "[a b]")
-   (stx (list (stx 'a (span (loc 'test 0 1) (loc 'test 0 2)) '())
-              (stx 'b (span (loc 'test 0 3) (loc 'test 0 4)) '()))
-        (span (loc 'test 0 0) (loc 'test 0 5)) '()))
+   (stx (list (stx 'a (span (loc 'test 0 1 1) (loc 'test 0 2 2)) '())
+              (stx 'b (span (loc 'test 0 3 3) (loc 'test 0 4 4)) '()))
+        (span (loc 'test 0 0 0) (loc 'test 0 5 5)) '()))
 
   ;; Test empty bracket list
   (check-stx-equal?
    (string->stx 'test "[]")
-   (stx '() (span (loc 'test 0 0) (loc 'test 0 2)) '()))
+   (stx '() (span (loc 'test 0 0 0) (loc 'test 0 2 2)) '()))
 
   ;; ============================================================
   ;; Improper lists (more than one element before dot)
@@ -477,10 +480,10 @@
   ;; Test improper list: (a b . c)
   (check-stx-equal?
    (string->stx 'test "(a b . c)")
-   (stx (cons (stx 'a (span (loc 'test 0 1) (loc 'test 0 2)) '())
-              (cons (stx 'b (span (loc 'test 0 3) (loc 'test 0 4)) '())
-                    (stx 'c (span (loc 'test 0 7) (loc 'test 0 8)) '())))
-        (span (loc 'test 0 0) (loc 'test 0 9)) '()))
+   (stx (cons (stx 'a (span (loc 'test 0 1 1) (loc 'test 0 2 2)) '())
+              (cons (stx 'b (span (loc 'test 0 3 3) (loc 'test 0 4 4)) '())
+                    (stx 'c (span (loc 'test 0 7 7) (loc 'test 0 8 8)) '())))
+        (span (loc 'test 0 0 0) (loc 'test 0 9 9)) '()))
 
   ;; ============================================================
   ;; Hash forms
@@ -489,17 +492,17 @@
   ;; Test standalone #t
   (check-stx-equal?
    (string->stx 'test "#t")
-   (stx #t (span (loc 'test 0 0) (loc 'test 0 2)) '()))
+   (stx #t (span (loc 'test 0 0 0) (loc 'test 0 2 2)) '()))
 
   ;; Test standalone #f
   (check-stx-equal?
    (string->stx 'test "#f")
-   (stx #f (span (loc 'test 0 0) (loc 'test 0 2)) '()))
+   (stx #f (span (loc 'test 0 0 0) (loc 'test 0 2 2)) '()))
 
   ;; Test #%identifier
   (check-stx-equal?
    (string->stx 'test "#%expression")
-   (stx '#%expression (span (loc 'test 0 0) (loc 'test 0 12)) '()))
+   (stx '#%expression (span (loc 'test 0 0 0) (loc 'test 0 12 12)) '()))
 
   ;; ============================================================
   ;; Atom edge cases
@@ -508,12 +511,12 @@
   ;; Test standalone number
   (check-stx-equal?
    (string->stx 'test "42")
-   (stx 42 (span (loc 'test 0 0) (loc 'test 0 2)) '()))
+   (stx 42 (span (loc 'test 0 0 0) (loc 'test 0 2 2)) '()))
 
   ;; Test negative number
   (check-stx-equal?
    (string->stx 'test "-7")
-   (stx -7 (span (loc 'test 0 0) (loc 'test 0 2)) '()))
+   (stx -7 (span (loc 'test 0 0 0) (loc 'test 0 2 2)) '()))
 
   ;; Test atom starting with dot (not a dotted pair separator)
   (check-match (string->stx 'test "(.foo)")

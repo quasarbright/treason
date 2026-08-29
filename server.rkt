@@ -265,67 +265,67 @@ do we want actual types instead of json?
 #;
 (module+ test
   (let ([syn (string->stx "test.tsn" "(let ([x 2]) x)")])
-    (check-equal? (goto-definition syn (loc "test.tsn" 0 13))
-                  (stx 'x (span (loc "test.tsn" 0 7) (loc "test.tsn" 0 8))))
+    (check-equal? (goto-definition syn (loc "test.tsn" 0 13 13))
+                  (stx 'x (span (loc "test.tsn" 0 7 7) (loc "test.tsn" 0 8 8))))
     ;; loc is the binding site
-    (check-equal? (goto-definition syn (loc "test.tsn" 0 7))
-                  (stx 'x (span (loc "test.tsn" 0 7) (loc "test.tsn" 0 8))))
+    (check-equal? (goto-definition syn (loc "test.tsn" 0 7 7))
+                  (stx 'x (span (loc "test.tsn" 0 7 7) (loc "test.tsn" 0 8 8))))
     ;; loc is a space
-    (check-equal? (goto-definition syn (loc "test.tsn" 0 12))
+    (check-equal? (goto-definition syn (loc "test.tsn" 0 12 12))
                   #f)
     ;; loc is not an identifier
-    (check-equal? (goto-definition syn (loc "test.tsn" 0 9))
+    (check-equal? (goto-definition syn (loc "test.tsn" 0 9 9))
                   #f)
     ;; loc is an unbound identifier
     (check-equal? (goto-definition (string->stx "test.tsn" "(let ([x 2]) y)")
-                                   (loc "test.tsn" 0 13))
+                                   (loc "test.tsn" 0 13 13))
                   #f)
     ;; shadowing
     (check-equal? (goto-definition (string->stx "test.tsn" "(let ([x 2]) (let ([x 3]) x))")
-                                   (loc "test.tsn" 0 26))
-                  (stx 'x (span (loc "test.tsn" 0 20) (loc "test.tsn" 0 21))))
+                                   (loc "test.tsn" 0 26 26))
+                  (stx 'x (span (loc "test.tsn" 0 20 20) (loc "test.tsn" 0 21 21))))
     ;; shadowing binding site
     (check-equal? (goto-definition (string->stx "test.tsn" "(let ([x 2]) (let ([x 3]) x))")
-                                   (loc "test.tsn" 0 20))
-                  (stx 'x (span (loc "test.tsn" 0 20) (loc "test.tsn" 0 21))))
+                                   (loc "test.tsn" 0 20 20))
+                  (stx 'x (span (loc "test.tsn" 0 20 20) (loc "test.tsn" 0 21 21))))
     ;; malformed rhs shouldn't get in the way
     (check-equal? (goto-definition (string->stx "test.tsn" "(let ([x (let)]) x)")
-                                   (loc "test.tsn" 0 17))
-                  (stx 'x (span (loc "test.tsn" 0 7) (loc "test.tsn" 0 8))))
+                                   (loc "test.tsn" 0 17 17))
+                  (stx 'x (span (loc "test.tsn" 0 7 7) (loc "test.tsn" 0 8 8))))
     ;; macro around let, maintain use-site spans
     (check-equal? (goto-definition (expand (string->stx "test.tsn" "(let-syntax-rule ([(mylet ([x rhs]) body) (let ([x rhs]) body)]) (mylet ([x 1]) x))"))
-                                   (loc "test.tsn" 0 80))
-                  (stx 'x (span (loc "test.tsn" 0 74) (loc "test.tsn" 0 75))))
+                                   (loc "test.tsn" 0 80 80))
+                  (stx 'x (span (loc "test.tsn" 0 74 74) (loc "test.tsn" 0 75 75))))
     ;; (unhygienic) macro-introduced binding, definition is in template
     (check-equal? (goto-definition (expand (string->stx "test.tsn" "(let-syntax-rule ([(let-x body) (let ([x 1]) body)]) (let-x x))"))
-                                   (loc "test.tsn" 0 60))
-                  (stx 'x (span (loc "test.tsn" 0 39) (loc "test.tsn" 0 40))))))
+                                   (loc "test.tsn" 0 60 60))
+                  (stx 'x (span (loc "test.tsn" 0 39 39) (loc "test.tsn" 0 40 40))))))
 
 #;
 (module+ test
   (check-equal? (find-references (string->stx "test.tsn" "(let ([x 2]) x)")
-                                 (loc "test.tsn" 0 7))
-                (list (stx 'x (span (loc "test.tsn" 0 13) (loc "test.tsn" 0 14)))))
+                                 (loc "test.tsn" 0 7 7))
+                (list (stx 'x (span (loc "test.tsn" 0 13 13) (loc "test.tsn" 0 14 14)))))
   ;; shadowing, don't include unbound
   (check-equal? (find-references (string->stx "test.tsn" "(let ([x x]) (let ([x x]) x))")
-                                 (loc "test.tsn" 0 7))
-                (list (stx 'x (span (loc "test.tsn" 0 22) (loc "test.tsn" 0 23)))))
+                                 (loc "test.tsn" 0 7 7))
+                (list (stx 'x (span (loc "test.tsn" 0 22 22) (loc "test.tsn" 0 23 23)))))
   ;; multiple references
   (check-equal? (find-references (string->stx "test.tsn" "(let ([x 2]) (let ([y x]) x))")
-                                 (loc "test.tsn" 0 7))
-                (list (stx 'x (span (loc "test.tsn" 0 22) (loc "test.tsn" 0 23)))
-                      (stx 'x (span (loc "test.tsn" 0 26) (loc "test.tsn" 0 27)))))
+                                 (loc "test.tsn" 0 7 7))
+                (list (stx 'x (span (loc "test.tsn" 0 22 22) (loc "test.tsn" 0 23 23)))
+                      (stx 'x (span (loc "test.tsn" 0 26 26) (loc "test.tsn" 0 27 27)))))
   ;; macro around let, maintain use-site spans
   (check-equal? (find-references (expand (string->stx "test.tsn" "(let-syntax-rule ([(mylet ([x rhs]) body) (let ([x rhs]) body)]) (mylet ([x 1]) x))"))
-                                 (loc "test.tsn" 0 74))
-                (list (stx 'x (span (loc "test.tsn" 0 80) (loc "test.tsn" 0 81)))))
+                                 (loc "test.tsn" 0 74 74))
+                (list (stx 'x (span (loc "test.tsn" 0 80 80) (loc "test.tsn" 0 81 81)))))
   ;; (unhygienic) macro-introduced reference gets definition-site spans, which are the same for each macro use.
   ;; strange, but this will go away with hygiene. also, vscode dedups
   (check-equal? (find-references (expand (string->stx "test.tsn" "(let-syntax-rule ([(m) x]) (let ([x 1]) (let ([y (m)]) (m))))"))
-                                 (loc "test.tsn" 0 34))
+                                 (loc "test.tsn" 0 34 34))
                 ;; duplicated spans
-                (list (stx 'x (span (loc "test.tsn" 0 23) (loc "test.tsn" 0 24)))
-                      (stx 'x (span (loc "test.tsn" 0 23) (loc "test.tsn" 0 24))))))
+                (list (stx 'x (span (loc "test.tsn" 0 23 23) (loc "test.tsn" 0 24 24)))
+                      (stx 'x (span (loc "test.tsn" 0 23 23) (loc "test.tsn" 0 24 24))))))
 
 
 ;; classify-binding : (or/c Binding #f) -> (or/c 'keyword 'variable 'macro #f)
@@ -424,7 +424,7 @@ do we want actual types instead of json?
 (define (position->loc pos source)
   (match pos
     [(hash* ['line line] ['character col])
-     (loc source line col)]))
+     (loc source line col #f)]))
 
 ;; -> (U message? eof)
 (define (read-message [in (current-input-port)])
