@@ -228,4 +228,23 @@ notes with michael going over slides
 - [x] call out that num resolves. maybe draw an arrow. emphasize "even though we can't expand match"
 - [x] show problem of no ss before showing ss.
 - [x] say rest in cdr, not nums
-- [ ] finish. slides aren't done and script isn't done, even for some done slides
+- [x] finish. slides aren't done and script isn't done, even for some done slides
+- [x] for autocomplete thing, it kind of looks like it works in racket and rust, but it's just doing string autocomplete. emphasize this in the script
+- [x] in "autocomplete with missing expression" in demo, put text on screen and in script saying "even in a macro!"
+- [x] say "services in a macro template"
+- [x] text in step-by-steps is too verbose
+- [x] last 2 steps of autocomplete should be 1 slide, no need for 2 with just different top text
+- [x] when talking about services in templates, emphasize that it's goto def and stuff too, not just autocomplete
+- [x] add base case for my-cond
+- [x] condition* and body* instead of rest-, less clunky
+- [x] misalign: real problem is missing a 2
+- [x] make the slide title "Future work: Binding Declarations"
+- [x] bad indentation on implementation of match, the template of the cons case
+- [x] sse limitations, "no bindings from within the use" "no compile-time side-effects from the macro"
+- [x] in autocomplete explanation, the cursor is misaligned
+- [x] consistently have line break between macro def and use, like in SSE misalignment slide
+- [x] in the SSE demo, visually emphasize the `([x])` and make sure it's mentioned in the script
+- [x] highlights on misalignment to make it obvious. 2 and let both highlighted, maybe the 1 as well
+- [x] clean up end of script
+  - [x] on the binding declaration misuse, script says "rest is correctly marked unbound, but num should be bound"
+- [ ] once we have functions, maybe rewrite the four defines example where treason gives you autocomplete to be the average top-down example since that's a more compelling program

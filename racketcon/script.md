@@ -37,7 +37,7 @@ Other languages with macros like Rust already have better IDE services than Rack
 
 **Macro example**
 
-Here is an example of a macro in rust that allows you to write a json map with nice syntax. We have an arrow in between each field name and value. But if we pull that status out into a variable and try to type it into the macro, we don't get autocomplete. And if we write those arrows wrong, we get a syntax error. But only the first error! What happened? I thought Rust had good IDE services and never gave up?
+Here is an example of a macro in rust that allows you to write a json map with nice syntax. We have an arrow in between each field name and value. But if we pull that status out into a variable and try to type it into the macro, we don't get real autocomplete. This autocomplete we see here is just from substrings in the text, not from actual static analysis of the language. And if we write those arrows wrong, we get a syntax error. But only the first error! What happened? I thought Rust had good IDE services and never gave up?
 
 **▶ But Not Rust Macros (why)**
 
@@ -53,15 +53,15 @@ Like I said before, Treason is a Racket-like language with better IDE support. H
 
 **▶ Demo: Autocomplete at a Missing Expression**
 
-Here's another one. This `my-let` on the last line is missing its body because we're about to write it. Normally that's a syntax error and Racket gives up. But if I ask for autocomplete right there where the body's going to go, it not only works but even includes `y`, which is part of the bad use.
+Here's another one. This `my-let` on the last line is missing its body because we're about to write it. Normally that's a syntax error and Racket gives up. But if I ask for autocomplete right there where the body's going to go, it not only works but even includes `y`, which is part of the bad use. And this is in a macro!
 
 **▶ Demo: Services Inside a Bad Macro Use**
 
-We can take this even further. The outer `my-let` here has a malformed binding group, so this is a bad macro use. Even a language like Rust would give up here. But somehow, we get services inside of the bad macro use. And since the body of the the inner `my-let` is missing like the previous example, it's actually a bad macro use inside of a bad macro use. This is possible thanks to our ~var expr annotation in the macro. This tells treason that the body of a `my-let` is just an ordinary expression, not something the macro specially interprets. So even though the outer use is broken, we can still dive into subexpressions to get services on them.
+We can take this even further. The outer `my-let` here is missing the thing x gets bound to, so this is a bad macro use. Even a language like Rust would give up here. But somehow, we get services inside of the bad macro use. And since the body of the the inner `my-let` is missing like the previous example, it's actually a bad macro use inside of a bad macro use. This is possible thanks to our ~var expr annotation in the macro. This tells treason that the body of a `my-let` is just an ordinary expression, not something the macro specially interprets. So even though the outer use is broken, we can still dive into subexpressions to get services on them.
 
 **▶ Demo: Services in a Template**
 
-One more nice little thing is that we get services inside the template of a macro definition. Here I'm running autocomplete in the template of the macro. Autocomplete suggests the pattern variable `p`, which you'd expect, but it also has `x`, which is a binding introduced by the macro template itself. So our IDE services understand the pattern variables that are available, and the structure of the code the template generates. And again, all of this happens even in an empty `let` body in the template.
+One more nice little thing is that we get services inside the template of a macro definition. Here I'm running autocomplete in the template of the macro. Autocomplete suggests the pattern variable `p`, which you'd expect, but it also has `x`, which is a binding introduced by the macro template itself. So our IDE services understand the pattern variables that are available, and the structure of the code the template generates. And it's not just autocomplete, we get other services like go to definition and everything to. And again, all of this happens even in an empty `let` body in the template.
 
 Alright, now how does this all work?
 
@@ -123,11 +123,11 @@ One is that we expand subexpressions in the context of the use, which is not nec
 
 **▶ Recursive Macros**
 
-Another limitation is that SSE is a little tricky with recursive macros. Here we have cond, which is implemented recursively. If we have a misuse on the first clause, we get SSE on the first condition, but none on the second clause because SSE never sees what the second clause is supposed to be.
+Another limitation is that SSE is a little tricky with recursive macros. Here we have cond, which is implemented recursively, and we only have annotations on the first clause. If we have a misuse on the first clause, we get SSE on the first condition, but none on the second clause because our annotations don't tell SSE what the second clause is supposed to be. If we expanded the recursive call, we would've realized that the other clause was also supposed to be two exprs. But we don't expand the template on a bad use, so the expander never realizes this.
 
 If instead of just saying clause ..., we added more annotations, we can get SSE on the second clause too.
 
-This makes the pattern a little clunky here, but we could use syntax classes to clean it up. And by the way, this is also a limitation of Racket's syntax/parse where the annotations are necessary to get better error messages.
+This makes the pattern a little clunky here, but we could use syntax classes to clean it up. And by the way, you also have to annotate this way with Racket's syntax/parse if you want to get good error messages.
 
 One thing to note is that even with a missing expression, we can still get SSE in that first clause since the condition was there. But things don't always work out so nicely.
 
@@ -150,42 +150,24 @@ We also want to add support for declaring binding rules like in syntax spec.
 **▶ The syntax-spec Vision (PEG)**
 
 For example, let's say we implement our own pattern-matching macro. This isn't just some simple syntactic sugar like other macros we've seen. This is a full-blown DSL with its own grammar and binding rules for patterns.
-> show good use
 
-What would happen happen if we had a malformed pattern?
-> show malformed example with no highlights. have red boxes around num and rest
+What would happen happen if we had a malformed pattern, like forgetting the cdr of a cons? Here, rest-nums is correctly considered unbound since it's not in the pattern, but num should be bound since it is.
 
 We _could_ get some SSE on the clause body since it's an expr, but treason doesn't know what a pattern is, so there's no way for us to get anything like SSE on the pattern itself. And our match macro also has its own binding rules that treason doesn't know about: We want all of the variables in the pattern to be bound in the body. But Treason doesn't know this, so SSE would see the pattern variable references in the body as unbound since it'll expand the body out of context without those bindings in scope.
 
 Here's what an implementation of this match macro would look like
 
-```racket
-(define-syntax my-match
-  (syntax-rules (cons)
-    [(_ target:expr [(cons (~var pa ???) (~var pd ???)) (~var body expr)])
-     ...]
-    ...))
-```
-
-We can have ~var expr on the body, but there is nothing we can put for pa and pd since treason doesn't know what a pattern is.
+We can have the expr annotation on the body, but there is nothing we can put for pa and pd since treason doesn't know what a pattern is.
 
 In order to tell treason what a pattern is and what the binding rules are for patterns, we could use something like Michael Ballantyne's syntax-spec.
 
-With syntax-spec, we can declare the grammar for our pattern matching macro. So a pattern is either a cons, a variable, or a wildcard pattern. And a clause has a pattern and a body expr. We can also add binding rules to tell the expander that all pattern variables are exported from the pattern and bound in the body. All of this information can be used to get SSE on our patterns and have it know about our binding rules!
-> existing syntax-spec slide
+With syntax-spec, we can declare the grammar for our pattern matching macro. So a pattern is either a cons, a variable, or a wildcard pattern. And a clause has a pattern and a body expr.
+
+We can also add binding rules to tell the expander that all pattern variables are exported from the pattern and bound in the body. All of this information can be used to get SSE on our patterns and have it know about our binding rules!
 
 We can make this happen rewriting our macro to use the clause annotation, and then Treason would know all about our DSL's grammar and binding rules.
 
-```racket
-(define-syntax my-match
-  (syntax-rules (cons)
-    [(_ target:expr (~var c clause))
-     ...]
-    ...))
-```
-
-Now if we go back to our bad use, SSE would be able to figure out that num in the body should be bound by the pattern.
-> show slide with num resolving but rest still unbound with red box
+Now if we go back to our bad use, SSE would be able to figure out that num in the body should be bound by the pattern. But rest-nums would still be unbound.
 
 SSE is already a novel improvement to the IDE experience of macro-extensible languages, but syntax spec integration would take it even farther and really enable us to make services in macro uses on par with what's possible for the core language.
 

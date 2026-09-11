@@ -79,7 +79,7 @@
 (define ANNOT-COLOR (light (light "green")))
 ;; further fills, for pairing several annotations with the fragments they expand
 (define ANNOT-COLOR-2 (light (light (light "blue"))))
-(define ANNOT-COLOR-3 (light (light "orange")))
+(define ANNOT-COLOR-3 (light "orange"))
 (define ANNOT-COLOR-4 (light (light (light "magenta"))))
 
 ;; annotate-pairs : scene (Listof (Pairof color (Listof target))) -> scene
@@ -238,10 +238,13 @@
  (item "Autocomplete works despite errors, and even includes ill-defined variables"))
 
 (slide
- #:title "Autocomplete at a Missing Expression"
+ #:title "Demo: Autocomplete at a Missing Expression"
  (img "autocomplete-at-a-missing-expression.png" 820 320)
  (para #:align 'center "The" (code my-let)
-       "body is missing, but autocomplete works and even includes" (code y)))
+       "body is missing, but autocomplete works and even includes" (code y))
+ (blank 15)
+ (para #:align 'center "The" (code my-let)
+       "Even in a macro!" (code y)))
 
 (slide
  #:title "Demo: Services Inside a Bad Macro Use"
@@ -252,11 +255,12 @@
  (para "Other languages don't do this!"))
 
 (slide
- #:title "Demo: Services in a Template"
+ #:title "Demo: Services in a Macro Template"
  (img "service-in-template.png" 820 280)
  (para #:align 'center "Autocomplete has pattern var"
        (codep p ",") "plus the macro-introduced" (codep x ",")
-       "even in an empty" (code let) "body."))
+       "even in an empty" (code let) "body.")
+ (para #:align 'center "Not just autocomplete."))
 
 ;; ---------------------------------------------------------------------------
 ;; How expansion gives rise to IDE services
@@ -460,15 +464,22 @@
   (img "autocomplete-no-body.png")
   (t "How does autocomplete get x?"))
 
-;; a text caret marking the user's cursor in an otherwise empty body
-(define caret (filled-rectangle 3 (pict-height (code x)) #:color "royalblue"))
+;; a text caret marking the user's cursor in an otherwise empty body.
+;; filled-rectangle's baseline is its bottom edge, so inline it rides a
+;; descent's worth above the text; give it a code glyph's ascent/descent.
+(define caret
+  (let* ([ref (code x)]
+         [slot (blank 3 (pict-height ref) (pict-ascent ref) (pict-descent ref))])
+    (refocus (cc-superimpose
+              slot
+              (filled-rectangle 3 (pict-height ref) #:color "royalblue"))
+             slot)))
 (define cur-x (code x))
 (define cur-cursor (code _cursor1234))
 (define cur-prog-empty (code (let ([x 1]) #,caret)))
 (define cur-prog (code (let ([#,cur-x 1]) #,cur-cursor)))
 (define cur-prog/resolved
-  (annotate-box (annotate-fill cur-prog cur-x #:color (light (light "green")))
-                cur-cursor))
+  (annotate-box (annotate-fill cur-prog cur-x) cur-cursor))
 (define cur-headers (list (bt "reference") (bt "resolves to") (bt "in scope")))
 (define cur-row (list (code _cursor1234) (t "nothing (unbound)") (code x)))
 (define (cur-table . rows)
@@ -479,36 +490,27 @@
          caption (blank 20) program (blank 30) table))
 
 (cur-slide
- (cap "The body is empty. The blue bar is where the user's cursor is."
-      "Nothing there to complete yet.")
+ (cap "The blue bar is where the user's cursor is. No body yet.")
  cur-prog-empty
  (cur-table))
 
 (cur-slide
- (cap "So we insert a cursor identifier," (codep _cursor1234 ",")
-      "right there, and expand.")
+ (cap "We insert a cursor identifier," (codep _cursor1234 ","))
  cur-prog
  (cur-table))
 
 (cur-slide
- (cap "Expanding, we reach the cursor.")
+ (cap "Expansion reaches cursor")
  (annotate-box cur-prog cur-cursor)
  (cur-table))
 
 (cur-slide
- (cap "The cursor identifier is made up, bound to nothing, so it resolves to"
-      "nothing: an unbound error. That's expected and fine.")
- cur-prog/resolved
- (cur-table cur-row))
-
-(cur-slide
- (cap "What we care about is what's in scope there:" (codep x ".")
-      "That's the autocomplete list.")
+ (cap "Cursor is unbound but has variables in scope")
  cur-prog/resolved
  (cur-table cur-row))
 
 ;; ---------------------------------------------------------------------------
-;; Services in templates: step-by-step, growing the resolution table
+;; Services in Macro Templates: step-by-step, growing the resolution table
 ;; ---------------------------------------------------------------------------
 
 ;; Hygiene colors: where an identifier came from. The point of the section is
@@ -566,7 +568,7 @@
                      tmpl-b-elet tmpl-b-x tmpl-b-cur))
          (cons USE-SITE-COLOR (list tmpl-b-arg)))))
 
-(slide #:title "Services in Templates" #:layout 'top
+(slide #:title "Services in Macro Templates" #:layout 'top
   (img "service-in-template.png")
   (t "How does autocomplete get x, and why not y?"))
 
@@ -600,7 +602,7 @@
 ;; tmpl-slide : caption program table -> slide, with a fixed layout so only
 ;; the boxes and the table's rows change between steps
 (define (tmpl-slide caption program table)
-  (slide #:title "Services in Templates" #:layout 'top
+  (slide #:title "Services in Macro Templates" #:layout 'top
          caption
          program
          hygiene-legend
@@ -608,43 +610,37 @@
          table))
 
 (tmpl-slide
- (cap "Insert a cursor" (code _cursor1234) "in the template body, then"
-      "expand.")
+ (cap "Insert a cursor" (code _cursor1234))
  tmpl-prog-A
  (tmpl-table))
 
 (tmpl-slide
- (cap "First we expand the definition, and reach the cursor sitting in the"
-      "template.")
+ (cap "Expansion reaches cursor")
  (annotate-box tmpl-prog-A tmpl-a-cur)
  (tmpl-table))
 
 (tmpl-slide
- (cap "Scanning a template, the only names we know are the pattern variables."
-      "So all we learn here is that" (code p) "is in scope.")
+ (cap "In a template, we only see pattern variables")
  (annotate-box tmpl-prog-A tmpl-a-cur)
  (tmpl-table tmpl-row1))
 
 (tmpl-slide
- (cap "Now we move on to the use.")
+ (cap "Expansion reaches the macro use")
  (annotate-box tmpl-prog-A tmpl-call)
  (tmpl-table tmpl-row1))
 
 (tmpl-slide
- (cap "Expanding it, we get another instance of the cursor identifier.")
+ (cap "Another instance of the cursor")
  (annotate-box tmpl-prog-B tmpl-use-expansion)
  (tmpl-table tmpl-row1))
 
 (tmpl-slide
- (cap "When resolving it again," (code x) "and" (code m) "are in scope, but" (code y) "is not:"
-      "the cursor came from the macro, so hygiene keeps the use site's"
-      "bindings away from it.")
+ (cap "Expansion reaches the other cursor. Hygiene affects what's in scope")
  (annotate-box tmpl-prog-B tmpl-b-cur)
  (tmpl-table tmpl-row1))
 
 (tmpl-slide
- (cap "One reference, two resolutions. Autocomplete takes the union of what"
-      "was in scope for each:" (codep m ",") (codep p ",") (codep x "."))
+ (cap "Autocomplete returns the union over the reference sites")
  (annotate-box tmpl-prog-B tmpl-b-cur)
  (tmpl-table tmpl-row1 tmpl-row2))
 
@@ -655,9 +651,9 @@
 (slide
  #:title "Limitations: SSE in Incomplete Context"
  (para "SSE expands subexpressions in the context of the use")
- (item "No local bindings from the use")
+ (item "No bindings from within the use")
  (item "No syntax parameters established by the macro")
- (item "No side effects from the macro"))
+ (item "No compile-time side effects from the macro"))
 
 ;; Two versions of my-cond with the same misuse — the first clause is missing
 ;; its body. Red marks the misuse. Each annotation gets its own color,
@@ -671,6 +667,7 @@
   (code
    (define-syntax my-cond
      (syntax-rules ()
+       [(my-cond) (void)]
        [(my-cond [#,cond-bad-a-cond #,cond-bad-a-body]
                  clause ...)
         (if condition body (my-cond clause ...))]))
@@ -686,8 +683,8 @@
 
 (define cond-good-a-cond (code condition:expr))
 (define cond-good-a-body (code body:expr))
-(define cond-good-a-rcond (code rest-conditions:expr))
-(define cond-good-a-rbody (code rest-bodies:expr))
+(define cond-good-a-rcond (code condition*:expr))
+(define cond-good-a-rbody (code body*:expr))
 (define cond-good-c1 (code (> x 0)))
 (define cond-good-clause1 (code [#,cond-good-c1]))
 (define cond-good-c2 (code (< x 0)))
@@ -696,13 +693,14 @@
   (code
    (define-syntax my-cond
      (syntax-rules ()
+       [(my-cond) (void)]
        [(my-cond [#,cond-good-a-cond #,cond-good-a-body]
                  [#,cond-good-a-rcond
                   #,cond-good-a-rbody]
                  ...)
         (if condition body
             (my-cond
-             [rest-conditions rest-bodies] ...))]))
+             [condition* body*] ...))]))
    code:blank
    (my-cond #,cond-good-clause1
             [#,cond-good-c2 #,cond-good-b2])))
@@ -729,16 +727,28 @@
  cond-good-scene
  (t "Better annotations means Better SSE"))
 
+;; The 2 in the pattern and the whole let in the use share a fill: that is the
+;; correspondence treason settled on, and it's the wrong one.
+(define mis-2 (code 2))
+(define mis-let (code (let ([y 4]) y)))
+(define mis-code
+  (annotate-fill
+   (code
+    (define-syntax m
+      (syntax-rules ()
+        [(m 1 #,mis-2 e:expr) 1]))
+    code:blank
+    (m 1 #,mis-let))
+   (list mis-2 mis-let) #:color ANNOT-COLOR))
+
 (slide
  #:title "Limitations: SSE Can Misalign"
- (code
-  (define-syntax m
-    (syntax-rules ()
-      [(m 1 2 e:expr) 1]))
-  (m 1 (let ([y 4]) y)))
+ mis-code
  (blank 10)
+ (item "The real issue is we're missing a" (code 2))
  (item "No services on the" (code let) "because treason thinks it's supposed to be the" (code 2))
- (item "Treason doesn't distinguish between missing vs wrong vs extra"))
+ (item "Treason doesn't distinguish between missing vs wrong vs extra")
+ )
 
 (slide
  #:title "Open Questions & Future Work"
@@ -757,8 +767,8 @@
   (code
    (define (sum nums)
      (my-match nums
-       [(cons num rest)
-        (+ num (sum rest))]
+       [(cons num rest-nums)
+        (+ num (sum rest-nums))]
        [_ 0]))))
 
 ;; A trimmed version of the real match DSL's syntax-spec declaration
@@ -794,7 +804,7 @@
 ;; the pattern's binder and rest still doesn't.
 (define match-bad-binder (code num))
 (define match-bad-num (code num))
-(define match-bad-rest (code rest))
+(define match-bad-rest (code rest-nums))
 (define match-bad-pat (code (cons #,match-bad-binder)))
 (define match-bad-prog
   (code
@@ -830,7 +840,7 @@
      (syntax-rules (cons _)
        [(_ target:expr
            [(cons #,match-pa-hole #,match-pd-hole) body:expr])
-        ...]
+            ...]
        ...))))
 (define match-impl-clause
   (code
@@ -841,21 +851,22 @@
        ...))))
 
 (slide
- #:title "Binding Declarations"
+ #:title "Future Work: Binding Declarations"
  #:layout 'top
  (t "A pattern-matching DSL")
  match-use-code)
 
 (slide
- #:title "Binding Declarations"
+ #:title "Future Work: Binding Declarations"
  #:layout 'top
  (t "What happens with a malformed pattern?")
  match-bad-unbound
  (para #:align 'center "SSE on the body, but not the pattern.")
- (para #:align 'center (code num) "and" (code rest) "are unbound."))
+ (para #:align 'center (code num) "and" (code rest-nums) "are unbound.")
+ (para #:align 'center (code rest-nums) "is correctly marked unbound, but num should be bound."))
 
 (slide
- #:title "Binding Declarations"
+ #:title "Future Work: Binding Declarations"
  #:layout 'top
  (t "What the macro looks like")
  match-impl-holes
@@ -863,13 +874,13 @@
        "but there is no such thing as" (code pat) "(yet!)."))
 
 (slide
- #:title "Binding Declarations"
+ #:title "Future Work: Binding Declarations"
  #:layout 'top
  (t "The DSL author declares the grammar and the binding rules")
  (match-spec-code #t))
 
 (slide
- #:title "Binding Declarations"
+ #:title "Future Work: Binding Declarations"
  #:layout 'top
  (t "The DSL author declares the grammar and the binding rules")
  (match-spec-code #f)
@@ -877,13 +888,13 @@
  )
 
 (slide
- #:title "Binding Declarations"
+ #:title "Future Work: Binding Declarations"
  #:layout 'top
  (t "Now the macro can annotate the whole clause")
  match-impl-clause)
 
 (slide
- #:title "Binding Declarations"
+ #:title "Future Work: Binding Declarations"
  #:layout 'top
  (t "Back to the bad use")
  match-bad-resolved
