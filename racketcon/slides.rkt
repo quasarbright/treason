@@ -111,6 +111,16 @@
  (item "Services like autocomplete not available when there is an error (which is most of the time)")
  (item "Only shows the first error"))
 
+;; a text caret marking the user's cursor in an otherwise empty body.
+;; filled-rectangle's baseline is its bottom edge, so inline it rides a
+;; descent's worth above the text; give it a code glyph's ascent/descent.
+(define caret
+  (let* ([ref (code x)]
+         [slot (blank 3 (pict-height ref) (pict-ascent ref) (pict-descent ref))])
+    (refocus (cc-superimpose
+              slot
+              (filled-rectangle 3 (pict-height ref) #:color "royalblue"))
+             slot)))
 (define mag-last (code (define mag-sq (+ x2 y2))))
 (define mag-code
   (code
@@ -118,7 +128,8 @@
    (define (magnitude x y)
      (define x2 (sqr x))
      (define y2 (sqr y))
-     #,mag-last)))
+     #,mag-last
+     #,caret)))
 (define mag-code/error
   (pin-under mag-code
              mag-last lb-find
@@ -177,7 +188,7 @@
  #:title "Rust keeps going"
  (t "Rust has macros, and doesn't quit on the first error.")
  (t "You even get autocomplete on the broken definitions.")
- (img "Pasted image 20260610201130.png" 760 360))
+ (img "rust-autocomplete.png" 760 360))
 
 (slide
  #:title "Bad services inside of Rust macros"
@@ -464,16 +475,6 @@
   (img "autocomplete-no-body.png")
   (t "How does autocomplete get x?"))
 
-;; a text caret marking the user's cursor in an otherwise empty body.
-;; filled-rectangle's baseline is its bottom edge, so inline it rides a
-;; descent's worth above the text; give it a code glyph's ascent/descent.
-(define caret
-  (let* ([ref (code x)]
-         [slot (blank 3 (pict-height ref) (pict-ascent ref) (pict-descent ref))])
-    (refocus (cc-superimpose
-              slot
-              (filled-rectangle 3 (pict-height ref) #:color "royalblue"))
-             slot)))
 (define cur-x (code x))
 (define cur-cursor (code _cursor1234))
 (define cur-prog-empty (code (let ([x 1]) #,caret)))
@@ -788,14 +789,14 @@
     (binding-class pat-var)
 
     (nonterminal/exporting pat
+      _
       x:pat-var
       #,bind-var
-      _
       (cons p1:pat p2:pat)
       #,bind-cons)
 
     (nonterminal clause
-      [p:pat body:racket-expr]
+      [p:pat body:treason-expr]
       #,bind-clause))))
 
 ;; The malformed pattern is missing its cdr subpattern, so rest is never bound.

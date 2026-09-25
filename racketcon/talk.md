@@ -248,3 +248,19 @@ notes with michael going over slides
 - [x] clean up end of script
   - [x] on the binding declaration misuse, script says "rest is correctly marked unbound, but num should be bound"
 - [ ] once we have functions, maybe rewrite the four defines example where treason gives you autocomplete to be the average top-down example since that's a more compelling program
+
+
+- [x] add empty line after magsq
+- [ ] have macros in the first rust example. println! is a macro. maybe just have a macro use instead of not_bound like bad vec! and emphasize that it continues after uses. So we get fault tolerance AFTER a bad use. And rewrite the next part to say something other than "let's throw macros into the mix" and instead say "within a bad use you don't get fault tolerance"
+  - it actually breaks!!!
+```rust
+fn main() {
+    let bad = vec![1, 2, 3; 4]; // bad macro use. should have comma instead of semicolon
+    let also_bad = vec![1, 2, 3; 4]; // same issue
+    println!(ba); // no autocomplete!
+}
+```
+  - actually see new version of file, we do
+- [x] in services in template explanation, make it more clear that we don't know anything about the internals of a template, it's just a sexpr
+- [x] when you come back to limitations of SSE, say the long name, not the acronym. maybe also remind them what sse is
+- [x] make syntax spec written and spoken order of forms the same. like var _ cons

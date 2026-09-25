@@ -7,7 +7,7 @@ slide aren't marked.
 
 **▶ Title**
 
-Hi, I'm Mike Delmonaco. I'm a software engineer at Amazon Web Services, and I went to Northeastern, where I learned Racket. And these days I do a little bit of programming language research on the side with Michael Ballantyne. Today I want to show you something Michael Ballantyne and I have been working called Treason. It's a language with a macro system similar to Racket's, but with better IDE support, even when the program is broken.
+Hi, I'm Mike Delmonaco. I'm a software engineer at Amazon Web Services, and I went to Northeastern, where I learned Racket. And these days I do a little bit of programming language research with Michael Ballantyne. Today I want to show you something we've been working on called Treason. It's a language with a macro system similar to Racket's, but with better IDE support, even when the program is broken.
 
 **▶ Agenda**
 
@@ -33,7 +33,7 @@ Actually, you can.
 
 **▶ Other Languages Keep Going (Rust)**
 
-Other languages with macros like Rust already have better IDE services than Racket. The Rust compiler doesn't stop at the first error. It keeps going, and you still get services on the code after the error. And despite the fact that both of these definitions are broken since they reference something unbound, Rust still gives you autocomplete with the broken `bad` in the suggestions. Pretty nice! Let's see what happens when we throw macros in the mix.
+Other languages with macros like Rust already have better IDE services than Racket. The Rust compiler doesn't stop at the first error. It keeps going, and you still get services on the code after the error. Vec! is a macro, and we have bad syntax here because of the semicolon where it expects a comma. And despite the fact that both of these definitions are broken because of this, Rust still gives you autocomplete with the broken `bad` in the suggestions. Pretty nice! But now let's see what happens inside of a bad macro use.
 
 **Macro example**
 
@@ -83,13 +83,13 @@ Macro hygiene and fault tolerance makes this all a little more complicated, but 
 
 **▶ So Why Does Racket Struggle?**
 
-Now we can see why Racket struggles. Racket's IDE services only look at the end result of expansion and the expander doesn't record this resolution information as it goes in any way that's surfaced to the IDE. So if expansion stops from any error, we get no information to inform services on any part of the file. Not even parts before the error.
+Now we can see why Racket struggles. Racket's IDE services only look at the end result of expansion and the expander doesn't record this resolution information as it goes in any way that's surfaced to the IDE if expansion fails. So if expansion stops from any error, we get no information to inform services on any part of the file. Not even parts before the error.
 
 So how does Treason get around this? The core idea is that the expander records every variable definition and resolution as it goes, so even if expansion fails we still surface that information to the IDE. And even if there are errors, we just keep expanding so we analyze as much of the program as we can.
 
 **▶ Fault-Tolerant Expansion**
 
-For example, here's a little `define1` macro that turns `(define1 x)` into `(define x 1)`. The first use is fine, but the second is missing the variable so it errors. We just replace that use with a sentinel and keep going. This is nothing new. Languages like rust already do it.
+For example, here's a little `define1` macro that turns `(define1 x)` into `(define x 1)`. The first use is fine, but the second is missing the variable so it errors. We just replace that use with a sentinel and keep going. This part of treason is nothing new. Languages like rust already do it.
 
 **▶ The Hard Part: Inside a Bad Macro Use (code)**
 
@@ -109,7 +109,7 @@ And again, hygiene makes this a little more complicated, but that's the main ide
 
 One last nice thing treason gives us is services in macro templates. Here we see that `p` is in scope, which is expected since it's a pattern variable, and `m` from the definition site, but also `x` which is bound in the macro-introduced code. We actually get this pretty much for free since we track resolutions as we expand.
 
-Again, since this the service we're using is autocomplete, we insert a bogus cursor identifier. When the expander is going through the definition of the macro, we'll try to resolve the cursor identifier in the template just to see if it resolves to a pattern variable. and it doesn't, so we know it's a macro-introduced identifier in the template. But like any other resolution, we keep track of what was in scope. Then we end up expanding the use, and in there we end up expanding the macro-introduced cursor identifier once again. When resolving this macro-introduced cursor identifier, the macro-introduced binding `x` is in scope, and also `m` from the definition site. Now we have 2 resolutions of the same identifier, which is something that happens when macros are involved. When this happens, autocomplete gives us the union of names in scope from all the resolutions.
+Again, since this the service we're using is autocomplete, we insert a bogus cursor identifier. When the expander is going through the definition of the macro, we'll try to resolve the cursor identifier in the template just to see if it resolves to a pattern variable. and it doesn't, so we know it's a macro-introduced identifier in the template. But like any other resolution, we keep track of what was in scope. Keep in mind, at this point, the template is just an opaque s-expression as far as the expander knows. Then we end up expanding the use, and in there we end up expanding the macro-introduced cursor identifier once again. When resolving this macro-introduced cursor identifier, the macro-introduced binding `x` is in scope, and also `m` from the definition site. Now we have 2 resolutions of the same identifier, which is something that happens when macros are involved. When this happens, autocomplete gives us the union of names in scope from all the resolutions.
 
 One nice thing is that this didn't really have to be baked into treason. By just recording information from resolutions as we expand, we naturally get services in templates from the expansion of macro uses.
 
@@ -118,6 +118,8 @@ One limitation of this is that it only works when your macro has a use. But if w
 SSE also has some limitations.
 
 **▶ Incomplete Context**
+
+Remember, SSE is spec driven subexpression expansion, that thing where we use annotations to expand subexpressions on a bad macro use.
 
 One is that we expand subexpressions in the context of the use, which is not necessarily the correct context for that subexpression. It may reference bindings internal to the macro, it may depend on syntax parameters established by the macro, stuff like that. But I'd argue it's better to have some possibly incorrect services on bad macro uses rather than nothing. And some of this could be alleviated by declaring binding rules in your macros. More on that later.
 
@@ -147,7 +149,7 @@ And right now, our language server re-expands every time you edit the program, s
 
 We also want to add support for declaring binding rules like in syntax spec.
 
-**▶ The syntax-spec Vision (PEG)**
+**▶ The syntax-spec Vision**
 
 For example, let's say we implement our own pattern-matching macro. This isn't just some simple syntactic sugar like other macros we've seen. This is a full-blown DSL with its own grammar and binding rules for patterns.
 
@@ -161,11 +163,11 @@ We can have the expr annotation on the body, but there is nothing we can put for
 
 In order to tell treason what a pattern is and what the binding rules are for patterns, we could use something like Michael Ballantyne's syntax-spec.
 
-With syntax-spec, we can declare the grammar for our pattern matching macro. So a pattern is either a cons, a variable, or a wildcard pattern. And a clause has a pattern and a body expr.
+With syntax-spec, we can declare the grammar for our pattern matching macro. So a pattern is either a wildcard, a variable, or a cons pattern. And a clause has a pattern and a body expr.
 
-We can also add binding rules to tell the expander that all pattern variables are exported from the pattern and bound in the body. All of this information can be used to get SSE on our patterns and have it know about our binding rules!
+We can also add binding rules to tell the expander that all pattern variables are exported from the pattern and bound in the body. All of this information could be used to get SSE on our patterns and have it know about our binding rules!
 
-We can make this happen rewriting our macro to use the clause annotation, and then Treason would know all about our DSL's grammar and binding rules.
+We could make this happen rewriting our macro to use the clause annotation, and then Treason would know all about our DSL's grammar and binding rules.
 
 Now if we go back to our bad use, SSE would be able to figure out that num in the body should be bound by the pattern. But rest-nums would still be unbound.
 
