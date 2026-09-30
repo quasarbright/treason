@@ -22,6 +22,8 @@ raco test reader-tests.rkt
 
 # Run the language server (reads JSON-RPC from stdin)
 racket server.rkt
+# or, once the package is installed, the launcher on PATH:
+treason-language-server
 
 # Run a treason program (a file whose first line is `#lang treason`)
 racket program.tsn
