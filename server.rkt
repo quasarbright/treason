@@ -200,7 +200,7 @@ do we want actual types instead of json?
                          (send client textDocument/publishDiagnostics
                                (hasheq 'uri uri
                                        'diagnostics (list (expander-crash->diagnostic err)))))])
-        (define syns (string->stxs uri text))
+        (define syns (string->stxs uri (blank-lang-line text)))
         (define result (analyze! syns))
         (hash-set! results uri result)
         (define diagnostics (map stx-error->diagnostic (expander-result-errors result)))
@@ -583,6 +583,25 @@ do we want actual types instead of json?
           'severity DiagnosticSeverity/Error
           'source "treason"
           'message (exn-message err)))
+
+;; String -> String
+;; Blanks out a leading `#lang` line, which a .tsn file needs to be run by Racket
+;; but which is not treason syntax. It becomes spaces rather than being removed,
+;; so that everything after it keeps its line, column and offset.
+(define (blank-lang-line text)
+  (match (regexp-match-positions #px"^\\s*(#lang[^\r\n]*)" text)
+    [(list _ (cons start end))
+     (string-append (substring text 0 start)
+                    (make-string (- end start) #\space)
+                    (substring text end))]
+    [#f text]))
+
+(module+ test
+  (check-equal? (blank-lang-line "#lang treason\n(f x)") "             \n(f x)")
+  (check-equal? (blank-lang-line "\n  #lang treason\n1") "\n               \n1")
+  (check-equal? (blank-lang-line "(f x)") "(f x)")
+  ;; only at the top: anywhere else it is still a reader error
+  (check-equal? (blank-lang-line "1\n#lang treason") "1\n#lang treason"))
 
 ;; stx-error-span and stx-error-diagnostic-message live in stx.rkt, next to
 ;; the error they describe: the #lang treason compiler needs them too.

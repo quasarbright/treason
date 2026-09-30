@@ -1273,6 +1273,24 @@
             (hasheq 'textDocument (hasheq 'uri test-uri 'text "#f")))))
    (check-equal? (send client get-diagnostics) '()))
 
+  ;; A .tsn file starts with `#lang treason` so that Racket can run it
+  (test-case
+   "#lang line: produces no diagnostics"
+   (define client (new capturing-client%))
+   (define server (new server% [client client]))
+   (send server initialize (hasheq))
+   (send server textDocument/didOpen
+         (hasheq 'textDocument (hasheq 'uri test-uri 'text "#lang treason\n(let ([x 1]) x)")))
+   (check-equal? (send client get-diagnostics) '()))
+
+  (test-case
+   "#lang line: positions after it are unchanged"
+   ;; the error on line 1 is reported on line 1, and definitions resolve there
+   (define source "#lang treason\n(let ([x 1]) (+ x y))")
+   (check-true (has-unbound-error-at? source (find-position source "y")))
+   (check-equal? (goto-definition source (find-position source "x" 1))
+                 (list (hash 'uri test-uri 'range (find-range source "x" 0)))))
+
   ;; ============================================================
   ;; Error message tests
   ;; ============================================================
