@@ -6,13 +6,55 @@ The core insight is that IDE services must be **fault-tolerant** — they need t
 
 Programs run as `#lang treason` modules: treason's own reader and expander process the file, every error in it is reported at once, and a program with no errors is compiled to Racket and run. The language has first-class functions (`lambda` and application), `if`, and a handful of primitives (`+ - * / = < > <= >= not`), alongside definitions, `let`, `block`, and macros.
 
+To use in an IDE, use the [vscode extension](https://github.com/quasarbright/treason-vscode) which recognizes `.tsn` files. This extension only works if Treason is installed and `treason-language-server` is in your path and functional. If you just use your normal racket IDE with racket language server, you will get the benefit of multiple expander errors being reported, but you won't get all the benefits of Treason's nicer IDE experience, like services in files with bad syntax.
+
 ### Key Features
 
 - IDE services (goto-definition, find-references, autocomplete) work even when the program has syntax errors
+  - You even get services WITHIN a bad macro use!
+- You get IDE services inside of macro templates (as long as the macro is used)
+- Hygienic autocomplete, which even works in an empty let-body and other positions that would normally be an error since you're missing an expression
 - Multiple syntax errors reported at once, not just the first one
-- All IDE services are macro-aware — they track use-site source spans through expansion, so goto-definition and find-references work on macro-defined and macro-used identifiers
-- Goto-definition and find-references work on `syntax-rules` pattern variables in macro templates, even if the macro is never called
-- Scope-aware autocomplete with full hygiene — macro-introduced bindings are not included from autocomplete at use-sites
+
+## Installation
+
+For just trying it out
+
+```bash
+raco pkg install --auto https://github.com/quasarbright/treason.git
+```
+
+For development, after cloning the repository.
+
+```bash
+# run from repository root
+raco pkg install --auto
+```
+
+Installing the package creates the `treason-language-server` command in Racket's user bin directory (`~/Library/Racket/<version>/bin` on macOS). Add that directory to your `PATH`, or point your editor at the full path.
+
+## Usage
+
+Write a treason file `program.tsn`
+
+```racket
+#lang treason
+
+(define x unbound)
+(define y another-unbound)
+```
+
+Then run it with
+
+```bash
+racket program.tsn
+```
+
+You (really, your IDE!) can run the language server (reads JSON-RPC from stdin)
+
+```bash
+treason-language-server
+```
 
 ## Language
 
@@ -149,24 +191,3 @@ sequenceDiagram
 - **`reader-tests.rkt`** — Unit tests for the reader.
 - **`lang-tests.rkt`** — Integration tests for `#lang treason`: write a file, load it, and check what it printed or how it failed.
 
-## Usage
-
-```bash
-# Install the package locally
-raco pkg install --auto
-
-# Run all tests
-raco test -p treason
-
-# Run tests for a specific file
-raco test lsp-tests.rkt
-raco test reader-tests.rkt
-
-# Run the language server (reads JSON-RPC from stdin)
-racket server.rkt
-
-# Run a treason program (a file whose first line is `#lang treason`)
-racket program.tsn
-```
-
-To use in an IDE, use the [vscode extension](https://github.com/quasarbright/treason-vscode)
