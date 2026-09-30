@@ -91,7 +91,8 @@
 
 (slide
  (titlet "Treason: Making Macros and IDE Services Work Together")
- (titlet "Mike Delmonaco"))
+ (t "Developed by Mike Delmonaco and Michael Ballantyne")
+ (t "Presented by Mike Delmonaco"))
 
 (slide
  #:title "Agenda"
