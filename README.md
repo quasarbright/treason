@@ -4,7 +4,7 @@ Racket has powerful hygienic macros but notoriously poor IDE support. treason is
 
 The core insight is that IDE services must be **fault-tolerant** — they need to keep working even when the program has errors, which is most of the time while you're writing code. treason's expander never gives up: it continues expanding past syntax errors, collects all of them, and still provides accurate goto-definition, find-references, and autocomplete on the parts that are well-formed.
 
-Currently, this repository contains a language server and expander for the treason language, but cannot actually run treason code, and there is no CLI for the expander, only the language server.
+Programs run as `#lang treason` modules: treason's own reader and expander process the file, every error in it is reported at once, and a program with no errors is compiled to Racket and run. The language itself is still small — there are no functions or application yet — so a running program computes with definitions, `let`, `block`, and macros.
 
 ### Key Features
 
@@ -70,7 +70,7 @@ All features work correctly through macro expansions — goto-definition and fin
 
 ## Architecture
 
-The pipeline is: **source text → reader → stx → expander → ExpanderState → LSP operations**
+The pipeline is: **source text → reader → stx → expander → ExpanderState**, which feeds two consumers: the **language server** (LSP operations over the cached result) and the **`#lang treason` compiler** (reports every error, or compiles the expanded program to Racket).
 
 ### Flow
 
@@ -123,9 +123,15 @@ sequenceDiagram
 
 - **`reader.rkt`** — Custom s-expression parser (`string->stx`, `string->stxs`) that produces `stx` trees with full source spans. Supports `()`, `[]`, dotted pairs, `#t`/`#f`, `'quote`, and `;` comments. Raises `exn:fail:parse` on errors.
 
-- **`stx.rkt`** — Core data definitions. A `stx` wraps a `StxE` (symbol, number, bool, null, or cons pair) with a `span` (start/end `loc`) and hygiene `marks`.
+- **`stx.rkt`** — Core data definitions. A `stx` wraps a `StxE` (symbol, number, bool, null, or cons pair) with a `span` (start/end `loc`, each a line, column, and character position) and hygiene `marks`. `span->srcloc` converts a span to a Racket srcloc.
 
 - **`stx-quote.rkt`** — Quasiquote-style syntax construction helpers: `stx-quote` (pattern matching and quoting) and `stx-rebuild` (quasisyntax/loc for updating subexpressions while preserving source spans).
+
+- **`lang/`** — `#lang treason`. `lang/reader.rkt` is the `#lang` entry point; `lang/read.rkt` reads the module body with treason's reader, padding the text with whitespace standing in for the `#lang` line so that spans locate the whole file; `lang/language.rkt` provides `#%module-begin`, which expands the file, reports its errors, and compiles it. The reader hands the body to `#%module-begin` as *text*, not as `stx`: a struct type is generated afresh for each module instantiation, so `stx` built by the reader is not the same type as the `stx` the expander uses one phase up.
+
+- **`diagnostics.rkt`** — Collects every error from an expansion, in source order, and raises them as one exception, the way Typed Racket reports a module's type errors. The exception subtypes `exn:fail:syntax` and carries a srcloc per error, since a caller one phase away cannot recognise a treason-specific struct type.
+
+- **`codegen.rkt`** — Compiles the expander's output (`XSExpr`) to Racket. The expander has already resolved hygiene and renamed every variable apart, so this is a structural translation. It only ever sees programs with no errors; a form it has no translation for is an internal error rather than code Racket would reject.
 
 - **`constants.rkt`** — LSP protocol numeric constants (`SymbolKind/Variable`, `TextDocumentSyncKind/Full`, `DiagnosticSeverity/Error`, etc.)
 
@@ -135,6 +141,7 @@ sequenceDiagram
 
 - **`lsp-tests.rkt`** — Integration tests for LSP operations. Tests call `goto-definition`, `find-references`, and `autocomplete` directly on source strings.
 - **`reader-tests.rkt`** — Unit tests for the reader.
+- **`lang-tests.rkt`** — Integration tests for `#lang treason`: write a file, load it, and check what it printed or how it failed.
 
 ## Usage
 
@@ -151,6 +158,9 @@ raco test reader-tests.rkt
 
 # Run the language server (reads JSON-RPC from stdin)
 racket server.rkt
+
+# Run a treason program (a file whose first line is `#lang treason`)
+racket program.rkt
 ```
 
 To use in an IDE, use the [vscode extension](https://github.com/quasarbright/treason-vscode)
