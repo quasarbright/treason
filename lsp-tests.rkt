@@ -27,6 +27,31 @@
     (list (hasheq 'label "x"))))
 
   (test-case
+   "lambda parameters"
+   (define source "(lambda (x y) (+ x y))")
+   (check-equal?
+    (goto-definition source (find-position source "x" 1))
+    (list
+     (hash 'uri test-uri 'range (find-range source "x" 0))))
+   (check-equal?
+    (find-references source (find-position source "y" 0))
+    (list
+     (hash 'uri test-uri 'range (find-range source "y" 1))))
+   (check-equal?
+    (autocomplete source (find-position source "x" 1))
+    (list (hasheq 'label "x") (hasheq 'label "y"))))
+
+  (test-case
+   "the arguments of a call to an unbound function are still analyzed"
+   ;; a call to a function that has not been written yet is still a call, so
+   ;; goto-definition keeps working in its arguments
+   (define source "(let ([x 1]) (g x))")
+   (check-equal?
+    (goto-definition source (find-position source "x" 1))
+    (list
+     (hash 'uri test-uri 'range (find-range source "x" 0)))))
+
+  (test-case
    "fault-tolerant"
    (define source "(let ([x unbound]) x)")
    (check-equal?
@@ -2315,6 +2340,15 @@
            (token 1             'number   '())
            (token '#%expression 'keyword  '(defaultLibrary))
            (token 'x            'variable '()))))
+
+  (test-case "semantic tokens: lambda and a primitive"
+    (check-equal?
+     (semantic-tokens "(lambda (x) (+ x 1))")
+     (list (token 'lambda 'keyword  '(defaultLibrary))
+           (token 'x      'variable '(definition))
+           (token '+      'variable '(defaultLibrary))
+           (token 'x      'variable '())
+           (token 1       'number   '()))))
 
   (test-case "semantic tokens: user-defined macro"
     (check-equal?

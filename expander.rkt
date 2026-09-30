@@ -16,6 +16,10 @@
 ;;       | (block def-or-expr ... expr) ;; must end in an expression
 ;;       | (let ([var expr]) expr)
 ;;       | (let-syntax ([mname macrot]) expr)
+;;       | (lambda (var ...) expr)
+;;       | (if expr expr expr)
+;;       | primitive                   ;; + - * / = < > <= >= not
+;;       | (expr expr ...)             ;; application
 ;;       | (mname ustx ...)
 ;; def-or-expr := expr
 ;;              | (define-syntax mname macrot)
@@ -76,6 +80,7 @@
 ;; A Binding is one of:
 ;; - VarBinding
 ;; - KeywordBinding
+;; - PrimitiveBinding
 ;; - MacroBinding
 ;; - PatternVariableBinding
 ;; Represents what an identifier resolves to in a scope.
@@ -89,6 +94,13 @@
 (struct keyword-binding [name] #:transparent)
 ;; name : Symbol - the keyword name ('let, 'define, etc.)
 ;; Keywords don't have surface binding sites.
+
+;; A PrimitiveBinding is a (primitive-binding Symbol)
+(struct primitive-binding [name] #:transparent)
+;; name : Symbol - the primitive's name, which is also the racket/base binding
+;;   it compiles to ('+, '<, etc.)
+;; A primitive is a value, unlike a keyword, and like a keyword has no surface
+;; binding site.
 
 ;; A MacroBinding is a (macro-binding Identifier Syntax Scope)
 (struct macro-binding [site macrot scp] #:transparent)
@@ -241,13 +253,20 @@
 
 ;; keywords : [Listof Symbol]
 (define keywords '(let let-syntax syntax-rules define
-                    define-syntax block begin #%expression))
+                    define-syntax block begin #%expression
+                    lambda if))
+
+;; primitives : [Listof Symbol]
+;; The primitive operations. Each compiles to the racket/base binding of the
+;; same name, so every name here must be one racket/base provides.
+(define primitives '(+ - * / = < > <= >= not))
 
 ;; initial-scope : core-scope
-;; The root scope containing bindings for all core keywords.
+;; The root scope containing bindings for all core keywords and primitives.
 (define initial-scope
   (core-scope
-   (for/fold ([acc (hash)])
+   (for/fold ([acc (for/hash ([sym primitives])
+                     (values (identifier-key sym '()) (primitive-binding sym)))])
              ([sym keywords])
      (hash-set acc (identifier-key sym '()) (keyword-binding sym)))))
 
@@ -291,20 +310,21 @@
     [(app stx-e (? number? n)) n]
     [(app stx-e (? boolean? b)) b]
     [(? identifier? id)
-     (define binding (scope-resolve scp id))
-     (cond
-       [(var-binding? binding) (var-binding-name binding)]
-       ;; a keyword names a form, not a value
-       [(keyword-binding? binding)
-        (record-and-return-stx-error
-         (stx-error (identifier-symbol id) "bad syntax" id #f))]
-       [(stx-error? binding) binding]
-       [else (record-and-return-stx-error
-              (stx-error 'expand-expr "unexpected binding type" expr #f))])]
+     (expand-reference id (scope-resolve scp id))]
+    [(app stx-e '())
+     (record-and-return-stx-error (stx-error #f "empty application" expr #f))]
     [(stx-quote (,head-stx . ,_))
      #:when (identifier? head-stx)
      (define binding (scope-resolve scp head-stx))
      (cond
+       ;; lambda
+       [(and (keyword-binding? binding)
+             (eq? 'lambda (keyword-binding-name binding)))
+        (expand-lambda expr scp)]
+       ;; if
+       [(and (keyword-binding? binding)
+             (eq? 'if (keyword-binding-name binding)))
+        (expand-if expr scp)]
        ;; block
        [(and (keyword-binding? binding)
              (eq? 'block (keyword-binding-name binding)))
@@ -373,19 +393,81 @@
         (when (ose-error? result)
           (for ([e (ose-error-exprs result)]) (expand-expr e scp)))
         result]
-       ;; unbound in head position - pass through the stx-error from scope-resolve
-       [(stx-error? binding)
-        binding]
-       ;; variable in head position - not callable
-       [(var-binding? binding)
-        (record-and-return-stx-error
-         (stx-error (identifier-symbol head-stx) "not a procedure or syntax" expr head-stx))]
+       ;; application of a variable or primitive; an unbound operator is
+       ;; reported by scope-resolve, and its arguments are still expanded
+       [(or (var-binding? binding) (primitive-binding? binding) (stx-error? binding))
+        (expand-app expr (expand-reference head-stx binding) scp)]
        [else (record-and-return-stx-error
               (stx-error #f "unexpected form" expr head-stx))])]
-    ;; Non-identifier in head position
+    ;; application of a non-identifier, such as a lambda
     [(stx-quote (,head-stx . ,_))
+     (expand-app expr (expand-expr head-stx scp) scp)]))
+
+;; expand-reference : Identifier (or/c Binding StxError) -> XSExpr
+;; Expands an identifier used as an expression, given what it resolved to.
+;; Takes the binding rather than resolving it, so that an operator resolved once
+;; to decide how to expand its application is not recorded as a reference twice.
+(define (expand-reference id binding)
+  (cond
+    [(var-binding? binding) (var-binding-name binding)]
+    [(primitive-binding? binding) `(#%primitive ,(primitive-binding-name binding))]
+    ;; a keyword names a form, not a value
+    [(keyword-binding? binding)
      (record-and-return-stx-error
-      (stx-error #f "not a procedure or syntax" expr head-stx))]))
+      (stx-error (identifier-symbol id) "bad syntax" id #f))]
+    [(stx-error? binding) binding]
+    [else (record-and-return-stx-error
+           (stx-error 'expand-expr "unexpected binding type" id #f))]))
+
+;; expand-lambda : Stx Scope -> XSExpr
+;; Expands a lambda: its parameters are bound in a new scope around its body.
+;; A malformed lambda is reported, but whatever parameters and body it has are
+;; still expanded, so that the language server keeps working inside it.
+(define (expand-lambda expr scp)
+  (match expr
+    [(stx-quote (,_ ,(and params-stx (stx (? list? params) _ _)) ,bodies ...))
+     (define scp^ (new-scope scp))
+     (define names (for/list ([p params]) (bind-parameter! p scp^)))
+     (define bodies^ (for/list ([b bodies]) (expand-expr b scp^)))
+     (match bodies^
+       [(list body^) `(lambda ,names ,body^)]
+       [_ (record-and-return-stx-error (stx-error 'lambda "bad syntax" expr #f))])]
+    [(stx-quote (,_ ,params-stx ,bodies ...))
+     (for ([b bodies]) (expand-expr b scp))
+     (record-and-return-stx-error (stx-error 'lambda "bad syntax" expr params-stx))]
+    [_ (record-and-return-stx-error (stx-error 'lambda "bad syntax" expr #f))]))
+
+;; bind-parameter! : Stx Scope -> (or/c Symbol StxError)
+;; Binds a lambda parameter in scp and returns its renamed name, or reports why
+;; it cannot be bound: it is not an identifier, or repeats an earlier parameter.
+(define (bind-parameter! param scp)
+  (cond
+    [(identifier? param)
+     (with-stx-error-handling
+       (define name (gensym (identifier-symbol param)))
+       (scope-bind! scp param (var-binding param name))
+       name)]
+    [else (record-and-return-stx-error (stx-error 'lambda "not an identifier" param #f))]))
+
+;; expand-if : Stx Scope -> XSExpr
+;; Expands an if, which takes a condition and exactly two branches.
+;; A malformed if is reported, and its parts are still expanded.
+(define (expand-if expr scp)
+  (match expr
+    [(stx-quote (,_ ,test ,then ,else))
+     `(if ,(expand-expr test scp) ,(expand-expr then scp) ,(expand-expr else scp))]
+    [(stx-quote (,_ ,parts ...))
+     (for ([p parts]) (expand-expr p scp))
+     (record-and-return-stx-error (stx-error 'if "bad syntax" expr #f))]
+    [_ (record-and-return-stx-error (stx-error 'if "bad syntax" expr #f))]))
+
+;; expand-app : Stx XSExpr Scope -> XSExpr
+;; Expands an application, given its already-expanded operator.
+(define (expand-app expr head^ scp)
+  (match expr
+    [(stx-quote (,_ ,args ...))
+     `(#%app ,head^ ,@(for/list ([a args]) (expand-expr a scp)))]
+    [_ (record-and-return-stx-error (stx-error #f "bad syntax in application" expr #f))]))
 
 ;; check-block-tail! : Stx [Listof Stx] [Listof XDef] -> Void
 ;; Records a stx-error unless the block's last form is an expression.
@@ -1233,7 +1315,8 @@
     [(var-binding site _) site]
     [(macro-binding site _ _) site]
     [(pattern-variable-binding site) site]
-    [(keyword-binding _) #f]))
+    [(keyword-binding _) #f]
+    [(primitive-binding _) #f]))
 
 ;; record-binding-site! : Identifier Binding -> Void
 ;; Records the binding site in the bindings table (for semantic tokens and LSP).
@@ -1756,7 +1839,7 @@
       (bad)
       (define x 2)))
    `(block
-     (#%expression ,(? stx-error?))
+     (#%expression (#%app ,(? stx-error?)))
      (define x0 2)))
 
   ;; bare identifier in block - treated as implicit #%expression
@@ -1920,18 +2003,6 @@
   ;; ----------------------------------------
 
   (test-case
-   "a variable in head position is recorded"
-   (define result (analyze! (list (sexpr->syntax '(block (define f 1) (f 2))))))
-   (check-equal? (map stx-error-message (expander-result-errors result))
-                 (list "not a procedure or syntax")))
-
-  (test-case
-   "a non-identifier in head position is recorded"
-   (define result (analyze! (list (sexpr->syntax '((1 2))))))
-   (check-equal? (map stx-error-message (expander-result-errors result))
-                 (list "not a procedure or syntax")))
-
-  (test-case
    "a macro used as a variable reference is recorded"
    (define sexp '(let-syntax ([m (syntax-rules () [(m) 1])]) m))
    (define result (analyze! (list (sexpr->syntax sexp))))
@@ -1950,6 +2021,111 @@
    (define result (analyze! (list (sexpr->syntax '(let ([y block]) y)))))
    (check-equal? (map stx-error-diagnostic-message (expander-result-errors result))
                  (list "block: bad syntax")))
+
+  ;; ----------------------------------------
+  ;; Functions: lambda, application, if, primitives
+  ;; ----------------------------------------
+
+  ;; expanded-of : [Listof S-Expression] -> XSExpr
+  (define (expanded-of forms)
+    (expander-result-expanded (analyze! (map sexpr->syntax forms))))
+
+  ;; errors-of : [Listof S-Expression] -> [Listof String]
+  ;; The diagnostics for a program, sorted, since errors are collected in a set.
+  (define (errors-of forms)
+    (sort (map stx-error-diagnostic-message
+               (expander-result-errors (analyze! (map sexpr->syntax forms))))
+          string<?))
+
+  (test-case
+   "lambda binds its parameters around its body"
+   (check-equal? (expanded-of '((lambda (x y) x)))
+                 '(block (#%expression (lambda (x0 y1) x0))))
+   (check-equal? (errors-of '((lambda (x y) x))) '()))
+
+  (test-case
+   "a lambda may take no parameters"
+   (check-equal? (expanded-of '((lambda () 1)))
+                 '(block (#%expression (lambda () 1)))))
+
+  (test-case
+   "a variable in head position is applied"
+   (check-equal? (expanded-of '((define f 1) (f 2)))
+                 '(block (define f0 1) (#%expression (#%app f0 2))))
+   (check-equal? (errors-of '((define f 1) (f 2))) '()))
+
+  (test-case
+   "a non-identifier in head position is applied"
+   (check-equal? (expanded-of '(((lambda (x) x) 1)))
+                 '(block (#%expression (#%app (lambda (x0) x0) 1)))))
+
+  (test-case
+   "a primitive is a value, distinct from any variable"
+   (check-equal? (expanded-of '((+ 1 2)))
+                 '(block (#%expression (#%app (#%primitive +) 1 2))))
+   (check-equal? (expanded-of '((define plus +)))
+                 '(block (define plus0 (#%primitive +)))))
+
+  (test-case
+   "a variable may shadow a primitive"
+   (check-equal? (expanded-of '((let ([+ 1]) +)))
+                 '(block (#%expression (let ([|+0| 1]) |+0|)))))
+
+  (test-case
+   "if takes a condition and two branches"
+   (check-equal? (expanded-of '((if #t 1 2)))
+                 '(block (#%expression (if #t 1 2))))
+   (check-equal? (errors-of '((if #t 1))) '("if: bad syntax"))
+   (check-equal? (errors-of '((if #t 1 2 3))) '("if: bad syntax")))
+
+  (test-case
+   "a malformed if still expands its parts"
+   (check-equal? (errors-of '((if #t undefined-a))) '("if: bad syntax" "undefined-a: unbound identifier")))
+
+  (test-case
+   "a repeated parameter is an error"
+   (check-equal? (errors-of '((lambda (x x) x))) '("name already bound: x")))
+
+  (test-case
+   "a parameter that is not an identifier is an error, and the others still bind"
+   (check-equal? (errors-of '((lambda (x 1) x))) '("lambda: not an identifier")))
+
+  (test-case
+   "a lambda with no body, or more than one, is an error that still expands its body"
+   (check-equal? (errors-of '((lambda (x)))) '("lambda: bad syntax"))
+   (check-equal? (errors-of '((lambda (x) x undefined-b)))
+                 '("lambda: bad syntax" "undefined-b: unbound identifier")))
+
+  (test-case
+   "a lambda whose parameters are not a list is an error that still expands its body"
+   (check-equal? (errors-of '((lambda x undefined-c)))
+                 '("lambda: bad syntax" "undefined-c: unbound identifier")))
+
+  (test-case
+   "an empty application is an error, not a crash"
+   (check-equal? (errors-of '(())) '("empty application"))
+   (check-equal? (errors-of '((define x ()))) '("empty application")))
+
+  (test-case
+   "an application with a dotted argument list is an error"
+   (check-equal? (errors-of '((define f 1) (f . 2))) '("bad syntax in application")))
+
+  (test-case
+   "the arguments of an unbound operator are still expanded"
+   ;; so that the language server keeps working inside a call to a function
+   ;; that has not been written yet
+   (check-equal? (errors-of '((g undefined-d)))
+                 '("g: unbound identifier" "undefined-d: unbound identifier")))
+
+  (test-case
+   "a parameter introduced by a macro does not capture the use site's variable"
+   (define xs (expanded-of '((define x 5)
+                             (define-syntax m (syntax-rules () [(_ e) ((lambda (x) e) 1)]))
+                             (m x))))
+   (match xs
+     [`(block (define ,outer 5) (begin) (#%expression (#%app (lambda (,param) ,ref) 1)))
+      (check-equal? ref outer)
+      (check-not-equal? param outer)]))
 
   ;; ----------------------------------------
   ;; Ellipsis tests

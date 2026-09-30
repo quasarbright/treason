@@ -65,6 +65,18 @@
          #,(compile-expr body ctx))]
     [`(#%expression ,e)
      (compile-expr e ctx)]
+    [`(lambda (,names ...) ,body)
+     #`(lambda #,(for/list ([name names]) (datum->syntax ctx name))
+         #,(compile-expr body ctx))]
+    [`(if ,test ,then ,alt)
+     #`(if #,(compile-expr test ctx) #,(compile-expr then ctx) #,(compile-expr alt ctx))]
+    [`(#%app ,operator ,args ...)
+     #`(#%app #,(compile-expr operator ctx)
+              #,@(for/list ([arg args]) (compile-expr arg ctx)))]
+    [`(#%primitive ,name)
+     ;; this module's own context, where racket/base is bound for the code it
+     ;; generates, so the name refers to racket/base's binding of it
+     (datum->syntax #'here name)]
     [_ (unknown-form 'compile-expr expr)]))
 
 ;; unknown-form : Symbol Any -> Nothing
@@ -77,7 +89,8 @@
 ;; ============================================================
 
 (module+ test
-  (require rackunit)
+  (require rackunit
+           (only-in "expander.rkt" primitives))
 
   ;; compile : XSExpr -> [Listof S-Expression]
   ;; The compiled module body, as data.
@@ -105,6 +118,36 @@
                  '((begin) (begin (define x0 '#t)) x0)))
 
   (test-case
+   "a lambda keeps its parameters"
+   (check-equal? (compile '(block (#%expression (lambda (x0 y1) x0))))
+                 '((lambda (x0 y1) x0))))
+
+  (test-case
+   "if keeps its condition and branches"
+   (check-equal? (compile '(block (#%expression (if #t 1 2))))
+                 '((if '#t '1 '2))))
+
+  (test-case
+   "an application applies its operator to its arguments"
+   (check-equal? (compile '(block (define f0 1) (#%expression (#%app f0 2))))
+                 '((define f0 '1) (#%app f0 '2))))
+
+  (test-case
+   "a primitive becomes the racket/base binding of the same name"
+   (define plus (car (xsexpr->module-body '(block (#%expression (#%primitive +))) #'here)))
+   (check-equal? (syntax->datum plus) '+)
+   (check-true (free-template-identifier=? plus #'+)))
+
+  (test-case
+   "every primitive the expander binds exists in racket/base"
+   ;; a name racket/base does not provide would compile to an unbound
+   ;; identifier: a static error from Racket, after treason's checks passed
+   (for ([name primitives])
+     (define id (car (xsexpr->module-body `(block (#%expression (#%primitive ,name))) #'here)))
+     (check-not-false (identifier-template-binding id)
+                      (format "~a is not bound in racket/base" name))))
+
+  (test-case
    "a form with no translation is an internal error, not bad Racket"
    (check-exn #rx"internal error"
-              (lambda () (compile '(block (#%expression (lambda (x) x))))))))
+              (lambda () (compile '(block (#%expression (set! x0 1))))))))

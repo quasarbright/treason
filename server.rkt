@@ -170,8 +170,9 @@ do we want actual types instead of json?
          (if (parse-error-result? result)
              '()
              (let ([lc (position->loc pos uri)])
+               ;; core names, keywords and primitives alike, are not offered
                (for/list ([name (autocomplete result lc)]
-                          #:unless (member name keywords))
+                          #:unless (or (member name keywords) (member name primitives)))
                  (hasheq 'label (symbol->string name)))))]))
 
     (define/public (textDocument/didOpen parameters)
@@ -333,6 +334,7 @@ do we want actual types instead of json?
   (match bnd
     [#f #f]
     [(keyword-binding _) 'keyword]
+    [(primitive-binding _) 'variable]
     [(var-binding _ _) 'variable]
     [(macro-binding _ _ _) 'macro]
     [(pattern-variable-binding _) 'macro]))
@@ -344,7 +346,7 @@ do we want actual types instead of json?
 ;; compute-token-modifiers : ExpanderState Span (or/c Binding #f) -> Natural
 (define (compute-token-modifiers state spn bnd)
   (define is-definition? (hash-has-key? (expander-state-bindings state) spn))
-  (define is-default-library? (and bnd (keyword-binding? bnd)))
+  (define is-default-library? (and bnd (or (keyword-binding? bnd) (primitive-binding? bnd))))
   (+ (if is-definition? 1 0)
      (if is-default-library? 2 0)))
 

@@ -4,11 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-**treason** is a research language exploring what it takes to build a Lisp with hygienic macros *and* a great IDE experience. It's a tiny Lisp with a full Language Server Protocol (LSP) implementation, written in Racket. The language supports `let`, `define`, `begin`, `block`, `let-syntax`, `define-syntax`, and `syntax-rules` macros.
+**treason** is a research language exploring what it takes to build a Lisp with hygienic macros *and* a great IDE experience. It's a tiny Lisp with a full Language Server Protocol (LSP) implementation, written in Racket. The language supports `lambda`, application, `if`, primitives, `let`, `define`, `begin`, `block`, `let-syntax`, `define-syntax`, and `syntax-rules` macros.
 
 The core insight: IDE services must be **fault-tolerant**. The expander never gives up — it continues expanding past syntax errors, collects all of them, and still provides accurate goto-definition, find-references, and autocomplete on the well-formed parts.
 
-Programs run as `#lang treason` modules: treason's own reader and expander process the file, every error in it is reported at once, and a program with no errors is compiled to Racket and run. The language itself is still small — there are no functions or application yet — so a running program computes with definitions, `let`, `block`, and macros.
+Programs run as `#lang treason` modules: treason's own reader and expander process the file, every error in it is reported at once, and a program with no errors is compiled to Racket and run. The language has first-class functions (`lambda` and application), `if`, and a handful of primitives (`+ - * / = < > <= >= not`), alongside definitions, `let`, `block`, and macros.
 
 ## Commands
 
@@ -47,7 +47,7 @@ The pipeline is: **source text → reader → stx → expander → ExpanderState
 
 - **`expander.rkt`** — Hygienic macro expander using scope graphs and marks. This is the most complex module. Key ideas:
   - **Scope Graphs**: Each scope has bindings and a parent scope. Macro usages create a "disjoin" scope with two parents: one for use-site bindings and one for macro-introduced bindings. These are distinguished using marks on identifiers. Binding resolution involves traversing up the scope graph, popping marks on disjoin scopes, in search of a matching binding.
-  - **Bindings**: `var-binding`, `keyword-binding`, `macro-binding`, `pattern-variable-binding` — each records its `site` identifier for LSP.
+  - **Bindings**: `var-binding`, `keyword-binding`, `primitive-binding`, `macro-binding`, `pattern-variable-binding` — each records its `site` identifier for LSP.
   - **`ExpanderState`** (a parameter): The expander accumulates static information in mutable tables. Each table is keyed by source span since LSP operations are in terms of source locations:
     - `resolutions` — maps each reference span to the binding(s) it resolved to, along with a snapshot of the scope at that point; used by goto-definition and autocomplete
     - `references` — maps each binding site span to all reference stx nodes that resolved to it; used by find-references

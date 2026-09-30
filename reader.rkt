@@ -334,6 +334,7 @@
           #f '())]
     [(? symbol? s) (stx s #f '())]
     [(? number? n) (stx n #f '())]
+    [(? boolean? b) (stx b #f '())]
     [_ s]))
 
 ;; syntax->sexpr : Stx -> SExpression
