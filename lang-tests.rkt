@@ -30,27 +30,32 @@
   (define (compile-error text)
     (with-handlers ([(lambda (_) #t) values]) (compile-treason text)))
 
+  ;; run-treason : String -> String
+  ;; Compiles and runs a #lang treason program, returning what it printed.
+  (define (run-treason text)
+    (with-output-to-string (lambda () (compile-treason text))))
+
   ;; error-srclocs : exn -> [Listof srcloc]
   (define (error-srclocs e) ((exn:srclocs-accessor e) e))
 
   (test-case
-   "a well-formed program compiles"
-   (check-not-exn (lambda () (compile-treason "#lang treason\n(define x 1)\nx\n"))))
+   "a well-formed program compiles and runs"
+   (check-equal? (run-treason "#lang treason\n(define x 1)\nx\n") "1\n"))
 
   (test-case
-   "an empty program compiles"
-   (check-not-exn (lambda () (compile-treason "#lang treason\n"))))
+   "an empty program compiles and prints nothing"
+   (check-equal? (run-treason "#lang treason\n") ""))
 
   (test-case
-   "a macro-using program compiles"
-   (check-not-exn
-    (lambda ()
-      (compile-treason
-       (string-append "#lang treason\n"
-                      "(define-syntax my-let\n"
-                      "  (syntax-rules () [(_ ([x e]) b) (let ([x e]) b)]))\n"
-                      "(define z (my-let ([q 3]) q))\n"
-                      "z\n")))))
+   "a macro-using program compiles and runs"
+   (check-equal?
+    (run-treason
+     (string-append "#lang treason\n"
+                    "(define-syntax my-let\n"
+                    "  (syntax-rules () [(_ ([x e]) b) (let ([x e]) b)]))\n"
+                    "(define z (my-let ([q 3]) q))\n"
+                    "z\n"))
+    "3\n"))
 
   (test-case
    "every error in the file is reported, in source order, by one exception"
@@ -90,4 +95,66 @@
    (define e (compile-error "#lang treason\n(define x \"hello\")\n"))
    (check-pred exn:fail:syntax? e)
    (check-equal? (exn-message e)
-                 "treason: 1 error\n  2:11: \"hello\": unbound identifier")))
+                 "treason: 1 error\n  2:11: \"hello\": unbound identifier"))
+
+  ;; ----------------------------------------
+  ;; Running
+  ;; ----------------------------------------
+
+  (test-case
+   "top-level expressions print their values; definitions print nothing"
+   (check-equal? (run-treason "#lang treason\n(define x 1)\nx\n#t\n") "1\n#t\n"))
+
+  (test-case
+   "a block evaluates to its last expression"
+   (check-equal? (run-treason "#lang treason\n(block (define y 2) (define z y) z)\n") "2\n"))
+
+  (test-case
+   "a block ending in a begin evaluates to the begin's last expression"
+   (check-equal? (run-treason "#lang treason\n(block (begin (define y 2) y))\n") "2\n"))
+
+  (test-case
+   "an inner let shadows an outer one"
+   (check-equal? (run-treason "#lang treason\n(let ([x 1]) (let ([x 2]) x))\n") "2\n"))
+
+  (test-case
+   "a definition may refer to one made later in the module"
+   (check-equal? (run-treason "#lang treason\n(define a 1)\n(define b a)\nb\n") "1\n"))
+
+  (test-case
+   "a macro's binding does not capture the user's variable of the same name"
+   ;; treason's hygiene has to survive into Racket: the expander tells the two
+   ;; t's apart, and the compiled code must not merge them
+   (check-equal?
+    (run-treason
+     (string-append "#lang treason\n"
+                    "(define t 5)\n"
+                    "(define-syntax m (syntax-rules () [(_ e) (let ([t 1]) e)]))\n"
+                    "(m t)\n"))
+    "5\n"))
+
+  (test-case
+   "the user's binding does not capture a macro's variable of the same name"
+   (check-equal?
+    (run-treason
+     (string-append "#lang treason\n"
+                    "(define t 5)\n"
+                    "(define-syntax m (syntax-rules () [(_ e) (let ([t e]) t)]))\n"
+                    "(let ([t 7]) (m t))\n"))
+    "7\n"))
+
+  (test-case
+   "a variable may share its name with something Racket binds"
+   ;; renamed, add becomes add1, which racket/base also binds
+   (check-equal? (run-treason "#lang treason\n(define add 5)\nadd\n") "5\n"))
+
+  (test-case
+   "a variable may shadow a keyword"
+   (check-equal? (run-treason "#lang treason\n(let ([let 1]) let)\n") "1\n"))
+
+  (test-case
+   "using a variable before its definition runs is a runtime error, not a compile error"
+   ;; forward references are statically fine, so treason accepts this; it fails
+   ;; only when the reference runs before the definition has
+   (define e (compile-error "#lang treason\n(block (define a b) (define b 1) a)\n"))
+   (check-pred exn:fail:contract:variable? e)))

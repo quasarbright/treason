@@ -294,7 +294,10 @@
      (define binding (scope-resolve scp id))
      (cond
        [(var-binding? binding) (var-binding-name binding)]
-       [(keyword-binding? binding) (identifier-symbol id)]
+       ;; a keyword names a form, not a value
+       [(keyword-binding? binding)
+        (record-and-return-stx-error
+         (stx-error (identifier-symbol id) "bad syntax" id #f))]
        [(stx-error? binding) binding]
        [else (record-and-return-stx-error
               (stx-error 'expand-expr "unexpected binding type" expr #f))])]
@@ -1934,6 +1937,19 @@
    (define result (analyze! (list (sexpr->syntax sexp))))
    (check-equal? (map stx-error-message (expander-result-errors result))
                  (list "unexpected binding type")))
+
+  (test-case
+   "a keyword used as a variable reference is an error"
+   ;; a keyword names a form, not a value, so it cannot be an expression
+   (define result (analyze! (list (sexpr->syntax '(define x let)))))
+   (check-equal? (map stx-error-diagnostic-message (expander-result-errors result))
+                 (list "let: bad syntax")))
+
+  (test-case
+   "a keyword in an expression nested inside a form is an error"
+   (define result (analyze! (list (sexpr->syntax '(let ([y block]) y)))))
+   (check-equal? (map stx-error-diagnostic-message (expander-result-errors result))
+                 (list "block: bad syntax")))
 
   ;; ----------------------------------------
   ;; Ellipsis tests

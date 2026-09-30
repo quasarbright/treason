@@ -5,24 +5,26 @@
 ;; The reader hands the whole module body across as one form holding the
 ;; program's syntax, so the expander sees the file at once, which is what
 ;; analyze! expects and what lets it report every error in the file rather than
-;; stopping at the first.
+;; stopping at the first. A program with no errors is compiled to Racket; its
+;; top-level expressions print their values, as in #lang racket.
 
 (provide (rename-out [module-begin #%module-begin]))
 
 (require (for-syntax racket/base
-                     ;; only analyze!: the expander provides all of its
+                     ;; only these: the expander provides all of its
                      ;; definitions, some of which shadow racket/base
-                     (only-in "../expander.rkt" analyze!)
+                     (only-in "../expander.rkt" analyze! expander-result-expanded)
                      (only-in "read.rkt" parse-treason-text)
-                     "../diagnostics.rkt"))
+                     "../diagnostics.rkt"
+                     "../codegen.rkt"))
 
 (define-syntax (module-begin stx)
   (syntax-case stx ()
     [(_ (_tag src text))
      (let* ([stxs (parse-treason-text (syntax->datum #'src) (syntax->datum #'text))]
-            [errors (collect-errors (analyze! stxs))])
+            [result (analyze! stxs)]
+            [errors (collect-errors result)])
        (unless (null? errors)
          (raise-treason-errors errors))
-       ;; Compiling the expanded program to Racket is not implemented yet, so a
-       ;; module that expands cleanly runs as an empty module.
-       #'(#%plain-module-begin))]))
+       #`(#%printing-module-begin
+          #,@(xsexpr->module-body (expander-result-expanded result) stx)))]))
