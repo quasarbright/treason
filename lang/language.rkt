@@ -13,7 +13,9 @@
 (require (for-syntax racket/base
                      ;; only these: the expander provides all of its
                      ;; definitions, some of which shadow racket/base
-                     (only-in "../expander.rkt" analyze! expander-result-expanded)
+                     (only-in "../expander.rkt"
+                              analyze! expander-result-expanded expander-result-state
+                              expander-state-renamings expander-state-origins)
                      (only-in "read.rkt" parse-treason-text)
                      "../diagnostics.rkt"
                      "../codegen.rkt"))
@@ -26,5 +28,8 @@
             [errors (collect-errors result)])
        (unless (null? errors)
          (raise-treason-errors errors))
+       (define state (expander-result-state result))
        #`(#%printing-module-begin
-          #,@(xsexpr->module-body (expander-result-expanded result) stx)))]))
+          #,@(xsexpr->module-body (expander-result-expanded result) stx
+                                  #:renamings (expander-state-renamings state)
+                                  #:origins (expander-state-origins state))))]))

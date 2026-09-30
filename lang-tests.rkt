@@ -238,4 +238,36 @@
                  (string-append "treason: 3 errors\n"
                                 "  2:12: name already bound: x\n"
                                 "  3:1: if: bad syntax\n"
-                                "  4:1: empty application"))))
+                                "  4:1: empty application")))
+
+  ;; ----------------------------------------
+  ;; Runtime errors read like the program
+  ;; ----------------------------------------
+
+  (test-case
+   "a runtime error names a variable as the program does, not by its renaming"
+   (define e (compile-error "#lang treason\n(block (define a b) (define b 1) a)\n"))
+   (check-regexp-match #rx"^b: undefined" (exn-message e)))
+
+  (test-case
+   "a function is named as the program names it"
+   (check-equal? (run-treason "#lang treason\n(define f (lambda (x) x))\nf\n")
+                 "#<procedure:f>\n"))
+
+  (test-case
+   "compiled code is located in the program"
+   ;; Racket names an anonymous function after its source location, so this is
+   ;; where the lambda sits in the treason file: line 3, column 2
+   (check-regexp-match #rx":3:2>\n$"
+                       (run-treason "#lang treason\n1\n  (lambda (x) x)\n")))
+
+  (test-case
+   "variables the program names alike stay distinct at runtime"
+   ;; both are called t in the compiled code; hygiene has to hold regardless
+   (check-equal?
+    (run-treason
+     (string-append "#lang treason\n"
+                    "(define t 5)\n"
+                    "(define-syntax m (syntax-rules () [(_ e) (let ([t 1]) (+ t e))]))\n"
+                    "(m t)\n"))
+    "6\n")))
