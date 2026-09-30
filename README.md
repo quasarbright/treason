@@ -160,7 +160,7 @@ raco test reader-tests.rkt
 racket server.rkt
 
 # Run a treason program (a file whose first line is `#lang treason`)
-racket program.rkt
+racket program.tsn
 ```
 
 To use in an IDE, use the [vscode extension](https://github.com/quasarbright/treason-vscode)

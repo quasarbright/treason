@@ -24,7 +24,7 @@ raco test reader-tests.rkt
 racket server.rkt
 
 # Run a treason program (a file whose first line is `#lang treason`)
-racket program.rkt
+racket program.tsn
 
 # Install the package locally
 raco pkg install --auto
