@@ -582,19 +582,5 @@ do we want actual types instead of json?
           'source "treason"
           'message (exn-message err)))
 
-;; stx-error? -> string?
-(define (stx-error-diagnostic-message err)
-  (match err
-    [(stx-error #f message _ _)
-     message]
-    [(stx-error who message _ _)
-     (format "~a: ~a" who message)]))
-
-;; stx-error? -> span?
-;; where should the red squiggly go?
-(define (stx-error-span err)
-  (match err
-    [(stx-error _ _ expr #f)
-     (stx-span expr)]
-    [(stx-error _ _ _ sub-expr)
-     (stx-span sub-expr)]))
+;; stx-error-span and stx-error-diagnostic-message live in stx.rkt, next to
+;; the error they describe: the #lang treason compiler needs them too.
