@@ -89,14 +89,13 @@
 
   (test-case
    "treason's reader is the one in charge, not Racket's"
-   ;; Racket would read "hello" as a string. treason's reader has no strings, so
-   ;; the quotes are just characters in a symbol, which is then unbound. The
-   ;; point is that Racket's reader never sees the file; that a quote can end up
-   ;; inside a symbol is a separate wart in the reader.
+   ;; Racket would read "hello" as a string. treason has no string literals, and
+   ;; it is treason's reader that says so, at the quote
    (define e (compile-error "#lang treason\n(define x \"hello\")\n"))
-   (check-pred exn:fail:syntax? e)
-   (check-equal? (exn-message e)
-                 "treason: 1 error\n  2:11: \"hello\": unbound identifier"))
+   (check-pred exn:fail:read? e)
+   (check-regexp-match #rx":2:10: string literals are not supported$" (exn-message e))
+   (define sl (first (exn:fail:read-srclocs e)))
+   (check-equal? (list (srcloc-line sl) (srcloc-column sl) (srcloc-span sl)) '(2 10 1)))
 
   ;; ----------------------------------------
   ;; Running

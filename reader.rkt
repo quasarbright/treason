@@ -60,6 +60,12 @@
         (parse-hash)]
        [(char=? ch #\')
         (parse-quote)]
+       ;; treason has no string literals; without this a quote would be read as
+       ;; part of a symbol, and reported later as an unbound identifier
+       [(char=? ch #\")
+        (parse-error! "string literals are not supported"
+                      (span (loc (source) (line) (col) (pos))
+                            (loc (source) (line) (add1 (col)) (add1 (pos)))))]
        [else
         (parse-atom)])]))
 
@@ -239,7 +245,8 @@
                   (char=? ch #\))
                   (char=? ch #\[)
                   (char=? ch #\])
-                  (char=? ch #\;))
+                  (char=? ch #\;)
+                  (char=? ch #\"))
         (advance!)
         (loop))))
 
@@ -526,6 +533,26 @@
   ;; Test mismatched closing delimiter raises parse error (not infinite loop)
   (check-exn exn:fail:parse?
              (lambda () (string->stx 'test "([x)]")))
+
+  ;; A double quote is not part of a symbol: treason has no string literals, so
+  ;; a quote is an error, located at the quote itself.
+  ;; parse-failure : String -> exn:fail:parse
+  (define (parse-failure text)
+    (with-handlers ([exn:fail:parse? values]) (string->stxs 'test text)))
+
+  (let ([e (parse-failure "\"hello\"")])
+    (check-equal? (exn-message e) "string literals are not supported")
+    (check-equal? (exn:fail:parse-span e) (span (loc 'test 0 0 0) (loc 'test 0 1 1))))
+
+  ;; inside a list, after other elements
+  (let ([e (parse-failure "(define x \"hello\")")])
+    (check-equal? (exn-message e) "string literals are not supported")
+    (check-equal? (exn:fail:parse-span e) (span (loc 'test 0 10 10) (loc 'test 0 11 11))))
+
+  ;; a quote ends a symbol, rather than joining it: this is the symbol abc,
+  ;; followed by a quote
+  (let ([e (parse-failure "abc\"def")])
+    (check-equal? (exn:fail:parse-span e) (span (loc 'test 0 3 3) (loc 'test 0 4 4))))
 
   ;; ============================================================
   ;; sexpr->syntax / syntax->sexpr round-trip
