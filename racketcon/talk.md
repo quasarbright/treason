@@ -264,10 +264,10 @@ fn main() {
 - [x] in services in template explanation, make it more clear that we don't know anything about the internals of a template, it's just a sexpr
 - [x] when you come back to limitations of SSE, say the long name, not the acronym. maybe also remind them what sse is
 - [x] make syntax spec written and spoken order of forms the same. like var _ cons
+- [x] put michael ballantyne's name in the title slide. make sure you mention him verbally
+- [x] semicolon squigglies are hard to see. make them triple semicolons or something
 - [ ] tighten up. you're 28 minutes
-- [ ] put michael ballantyne's name in the title slide. make sure you mention him verbally
 - [ ] verbally mention drracket and how it's worse. say this is vscode
-- [ ] semicolon squigglies are hard to see. make them triple semicolons or something
 - [ ] slide when we talked about bad rust went on too long, keep it brief
 - [ ] mention lean when you mention rust
 - [ ] when you talk about limitations of SSE, show an actual example with a local variable. like `(mylet ([x]) (+ x y))`
