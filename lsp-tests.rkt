@@ -1207,6 +1207,22 @@
                "expected diagnostic message to mention unexpected end of input"))
 
   (test-case
+   "error: a string literal is reported at its quote"
+   ;; treason has no strings; the diagnostic should say so, at the quote, rather
+   ;; than reporting the quoted text as an unbound identifier
+   (define client (new capturing-client%))
+   (define server (new server% [client client]))
+   (send server initialize (hasheq))
+   (send server textDocument/didOpen
+         (hasheq 'textDocument (hasheq 'uri test-uri 'text "(define x \"hello\")")))
+   (match (send client get-diagnostics)
+     [(list d)
+      (check-equal? (hash-ref d 'message) "string literals are not supported")
+      (check-equal? (hash-ref d 'range)
+                    (hash 'start (hash 'line 0 'character 10)
+                          'end (hash 'line 0 'character 11)))]))
+
+  (test-case
    "error: LSP operations return graceful results after parse error"
    ;; After opening a document that fails to parse, all LSP operations should
    ;; return graceful empty results rather than erroring.
