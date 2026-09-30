@@ -62,8 +62,9 @@
    (define e (compile-error "#lang treason\n(define x 1)\n(f y)\n(block (define z 2))\n"))
    (check-pred exn:fail:syntax? e)
    (check-equal? (exn-message e)
-                 (string-append "treason: 2 errors\n"
+                 (string-append "treason: 3 errors\n"
                                 "  3:2: f: unbound identifier\n"
+                                "  3:4: y: unbound identifier\n"
                                 "  4:8: block: block must end in an expression")))
 
   (test-case
@@ -157,4 +158,84 @@
    ;; forward references are statically fine, so treason accepts this; it fails
    ;; only when the reference runs before the definition has
    (define e (compile-error "#lang treason\n(block (define a b) (define b 1) a)\n"))
-   (check-pred exn:fail:contract:variable? e)))
+   (check-pred exn:fail:contract:variable? e))
+
+  ;; ----------------------------------------
+  ;; Functions
+  ;; ----------------------------------------
+
+  (test-case
+   "a lambda applied to an argument"
+   (check-equal? (run-treason "#lang treason\n((lambda (x) (+ x 1)) 41)\n") "42\n"))
+
+  (test-case
+   "a recursive function"
+   (check-equal?
+    (run-treason
+     (string-append "#lang treason\n"
+                    "(define fact (lambda (n) (if (= n 0) 1 (* n (fact (- n 1))))))\n"
+                    "(fact 5)\n"))
+    "120\n"))
+
+  (test-case
+   "mutually recursive functions in a block"
+   (check-equal?
+    (run-treason
+     (string-append "#lang treason\n"
+                    "(block\n"
+                    "  (define even? (lambda (n) (if (= n 0) #t (odd? (- n 1)))))\n"
+                    "  (define odd? (lambda (n) (if (= n 0) #f (even? (- n 1)))))\n"
+                    "  (even? 10))\n"))
+    "#t\n"))
+
+  (test-case
+   "a closure captures its environment"
+   (check-equal?
+    (run-treason
+     (string-append "#lang treason\n"
+                    "(define make-adder (lambda (n) (lambda (x) (+ x n))))\n"
+                    "((make-adder 1) 41)\n"))
+    "42\n"))
+
+  (test-case
+   "a primitive is a value that can be passed around"
+   (check-equal?
+    (run-treason
+     (string-append "#lang treason\n"
+                    "(define apply2 (lambda (f a b) (f a b)))\n"
+                    "(apply2 + 1 2)\n"
+                    "(apply2 < 1 2)\n"
+                    "(not #f)\n"))
+    "3\n#t\n#t\n"))
+
+  (test-case
+   "a variable may shadow a primitive"
+   (check-equal? (run-treason "#lang treason\n(let ([+ 1]) +)\n") "1\n"))
+
+  (test-case
+   "a parameter introduced by a macro does not capture the user's variable"
+   (check-equal?
+    (run-treason
+     (string-append "#lang treason\n"
+                    "(define x 5)\n"
+                    "(define-syntax m (syntax-rules () [(_ e) ((lambda (x) e) 1)]))\n"
+                    "(m x)\n"))
+    "5\n"))
+
+  (test-case
+   "a type error in a primitive is a runtime error"
+   (check-pred exn:fail:contract? (compile-error "#lang treason\n(+ 1 #t)\n")))
+
+  (test-case
+   "calling a function with the wrong number of arguments is a runtime error"
+   (check-pred exn:fail:contract:arity? (compile-error "#lang treason\n((lambda (x) x))\n")))
+
+  (test-case
+   "static errors in functions are treason's, reported together"
+   (define e (compile-error "#lang treason\n(lambda (x x) x)\n(if 1 2)\n()\n"))
+   (check-pred exn:fail:syntax? e)
+   (check-equal? (exn-message e)
+                 (string-append "treason: 3 errors\n"
+                                "  2:12: name already bound: x\n"
+                                "  3:1: if: bad syntax\n"
+                                "  4:1: empty application"))))
