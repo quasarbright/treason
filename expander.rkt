@@ -140,12 +140,20 @@
 ;; LSP State
 ;; ------------------------------------------------------------
 
-;; An ExpanderState is a (expander-state Hash Hash Hash Hash MutableSet)
-(struct expander-state [resolutions references bindings stx-errors] #:transparent)
+;; An ExpanderState is a (expander-state Hash Hash Hash MutableSet Hash Hash)
+(struct expander-state [resolutions references bindings stx-errors renamings origins] #:transparent)
 ;; resolutions : [MutableHashOf Span [Listof Resolution]] - maps ref span to resolutions
 ;; references : [MutableHashOf Span [Listof Stx]] - maps binding site span to ref stx nodes
 ;; bindings : [MutableHashOf Span Binding] - maps binding site span to its Binding
 ;; stx-errors : [MutableSetOf stx-error?]
+;; renamings : [MutableHasheqOf Symbol Symbol] - maps each renamed variable to the
+;;   name it has in the program, so compiled code can call it that. Recorded when
+;;   the variable is renamed, so a macro used twice keeps both of its renamings,
+;;   which a table keyed by span cannot.
+;; origins : [MutableHasheqOf XSExpr Span] - maps an expanded node to the span of
+;;   the syntax it came from, so compiled code can locate errors in the program.
+;;   Keyed by identity: each compound node is a freshly built list, which keeps
+;;   the expanded output plain data.
 
 ;; A Resolution is a (resolution Binding-or-#f Stx Scope)
 (struct resolution [binding ref-stx scp] #:transparent)
@@ -333,7 +341,7 @@
         (define defs^ (expand-defs-pass1 defs scp^))
         (define defs^^ (expand-defs-pass2 defs^ scp^))
         (check-block-tail! expr defs defs^^)
-        `(block . ,defs^^)]
+        (with-origin expr `(block . ,defs^^))]
        ;; let
        [(and (keyword-binding? binding)
              (eq? 'let (keyword-binding-name binding)))
@@ -342,11 +350,11 @@
             [(stx-quote (let ([,(and x-stx (? identifier?)) ,e-stx]) ,body))
              (define e^ (expand-expr e-stx scp))
              (define scp^ (new-scope scp))
-             (define x-name (gensym (identifier-symbol x-stx)))
+             (define x-name (rename-variable! x-stx))
              (define x-binding (var-binding x-stx x-name))
              (scope-bind! scp^ x-stx x-binding)
              (define b^ (expand-expr body scp^))
-             `(let ([,x-name ,e^]) ,b^)]
+             (with-origin expr `(let ([,x-name ,e^]) ,b^))]
             ;; optimistic sub-expression expansion
             [(stx-quote (let ,bg ,body))
              (define bg^
@@ -430,7 +438,7 @@
      (define names (for/list ([p params]) (bind-parameter! p scp^)))
      (define bodies^ (for/list ([b bodies]) (expand-expr b scp^)))
      (match bodies^
-       [(list body^) `(lambda ,names ,body^)]
+       [(list body^) (with-origin expr `(lambda ,names ,body^))]
        [_ (record-and-return-stx-error (stx-error 'lambda "bad syntax" expr #f))])]
     [(stx-quote (,_ ,params-stx ,bodies ...))
      (for ([b bodies]) (expand-expr b scp))
@@ -444,7 +452,7 @@
   (cond
     [(identifier? param)
      (with-stx-error-handling
-       (define name (gensym (identifier-symbol param)))
+       (define name (rename-variable! param))
        (scope-bind! scp param (var-binding param name))
        name)]
     [else (record-and-return-stx-error (stx-error 'lambda "not an identifier" param #f))]))
@@ -455,7 +463,7 @@
 (define (expand-if expr scp)
   (match expr
     [(stx-quote (,_ ,test ,then ,else))
-     `(if ,(expand-expr test scp) ,(expand-expr then scp) ,(expand-expr else scp))]
+     (with-origin expr `(if ,(expand-expr test scp) ,(expand-expr then scp) ,(expand-expr else scp)))]
     [(stx-quote (,_ ,parts ...))
      (for ([p parts]) (expand-expr p scp))
      (record-and-return-stx-error (stx-error 'if "bad syntax" expr #f))]
@@ -466,7 +474,7 @@
 (define (expand-app expr head^ scp)
   (match expr
     [(stx-quote (,_ ,args ...))
-     `(#%app ,head^ ,@(for/list ([a args]) (expand-expr a scp)))]
+     (with-origin expr `(#%app ,head^ ,@(for/list ([a args]) (expand-expr a scp))))]
     [_ (record-and-return-stx-error (stx-error #f "bad syntax in application" expr #f))]))
 
 ;; check-block-tail! : Stx [Listof Stx] [Listof XDef] -> Void
@@ -530,7 +538,7 @@
             [(stx-quote (define ,var-stx ,expr-stx))
              (unless (identifier? var-stx)
                (raise-and-record-stx-error (stx-error 'define "bad syntax" def var-stx)))
-             (define var-name (gensym (identifier-symbol var-stx)))
+             (define var-name (rename-variable! var-stx))
              (define var-bnd (var-binding var-stx var-name))
              (scope-bind! scp var-stx var-bnd)
              `(define ,var-name ,expr-stx)]
@@ -1265,6 +1273,23 @@
   (record-stx-error! err)
   (raise err))
 
+;; rename-variable! : Identifier -> Symbol
+;; A fresh name for a variable, recorded with the name the program gives it so
+;; that compiled code can call it that.
+(define (rename-variable! id)
+  (define name (gensym (identifier-symbol id)))
+  (when (current-expander-state)
+    (hash-set! (expander-state-renamings (current-expander-state)) name (identifier-symbol id)))
+  name)
+
+;; with-origin : Stx XSExpr -> XSExpr
+;; Records that an expanded node came from the given syntax, and returns the node.
+(define (with-origin stx node)
+  (define spn (stx-span stx))
+  (when (and spn (current-expander-state))
+    (hash-set! (expander-state-origins (current-expander-state)) node spn))
+  node)
+
 ;; record-and-return-stx-error : stx-error? -> stx-error?
 ;; Records an error and returns it for embedding in the expanded output.
 ;; Use this for errors that become part of the expanded tree rather than
@@ -1282,7 +1307,7 @@
 ;; make-expander-state : -> ExpanderState
 ;; Creates a fresh expander state with empty tables.
 (define (make-expander-state)
-  (expander-state (make-hash) (make-hash) (make-hash) (mutable-set)))
+  (expander-state (make-hash) (make-hash) (make-hash) (mutable-set) (make-hasheq) (make-hasheq)))
 
 ;; hash-cons! : MutableHash Key Value -> Void
 ;; Appends a value to the list stored at key (multi-valued hash).
@@ -2116,6 +2141,40 @@
    ;; that has not been written yet
    (check-equal? (errors-of '((g undefined-d)))
                  '("g: unbound identifier" "undefined-d: unbound identifier")))
+
+  ;; ----------------------------------------
+  ;; Renamings and origins, for compiling
+  ;; ----------------------------------------
+
+  ;; state-of : String -> ExpanderState
+  (define (state-of text)
+    (expander-result-state (analyze! (string->stxs "t" text))))
+
+  (test-case
+   "every renamed variable is recorded with its surface name"
+   (check-equal? (expander-state-renamings (state-of "(define x 1) (lambda (y) (let ([z y]) z))"))
+                 (make-hasheq '((x0 . x) (y1 . y) (z2 . z)))))
+
+  (test-case
+   "a macro used twice records both of its renamings"
+   ;; the bindings table, keyed by span, keeps only one of these: both t's have
+   ;; the span of the t in the template
+   (define renamings
+     (expander-state-renamings
+      (state-of "(define-syntax m (syntax-rules () [(_) (let ([t 1]) t)])) (m) (m)")))
+   (check-equal? (length (for/list ([(name surface) renamings] #:when (eq? surface 't)) name))
+                 2))
+
+  (test-case
+   "an expanded node is recorded with the span of the syntax it came from"
+   (define result (analyze! (string->stxs "t" "((lambda (x) x) 1)")))
+   (define origins (expander-state-origins (expander-result-state result)))
+   (match (expander-result-expanded result)
+     [`(block (#%expression ,(and app `(#%app ,lam 1))))
+      (check-equal? (hash-ref origins app)
+                    (span (loc "t" 0 0 0) (loc "t" 0 18 18)))
+      (check-equal? (hash-ref origins lam)
+                    (span (loc "t" 0 1 1) (loc "t" 0 15 15)))]))
 
   (test-case
    "a parameter introduced by a macro does not capture the use site's variable"

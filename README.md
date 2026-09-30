@@ -122,6 +122,8 @@ sequenceDiagram
     - `references` — maps each binding site span to all reference stx nodes that resolved to it; used by find-references
     - `bindings` — maps each binding site span to its binding; used to distinguish binding sites from reference sites and for semantic tokens
     - `stx-errors` — the set of all syntax errors encountered during expansion; published as diagnostics
+    - `renamings` — maps each renamed variable to the name the program gives it; used by the compiler so compiled code names variables the way the program does
+    - `origins` — maps each compound expanded node, by identity, to the span it came from; used by the compiler to give compiled code source locations in the program
   - Two-pass definition expansion: pass 1 discovers all bindings (enabling forward references), pass 2 expands expressions
   - `analyze!` is the main entry point; returns an `ExpanderResult`, containing information including tables found in `ExpanderState`
 
@@ -135,7 +137,7 @@ sequenceDiagram
 
 - **`diagnostics.rkt`** — Collects every error from an expansion, in source order, and raises them as one exception, the way Typed Racket reports a module's type errors. The exception subtypes `exn:fail:syntax` and carries a srcloc per error, since a caller one phase away cannot recognise a treason-specific struct type.
 
-- **`codegen.rkt`** — Compiles the expander's output (`XSExpr`) to Racket. The expander has already resolved hygiene and renamed every variable apart, so this is a structural translation. It only ever sees programs with no errors; a form it has no translation for is an internal error rather than code Racket would reject.
+- **`codegen.rkt`** — Compiles the expander's output (`XSExpr`) to Racket. The expander has already resolved hygiene and renamed every variable apart, so this is a structural translation. It only ever sees programs with no errors; a form it has no translation for is an internal error rather than code Racket would reject. Variables keep the names the program gives them, each renaming with a scope of its own so that hygiene still holds, and compiled forms carry source locations, so runtime errors and procedure names read like the program.
 
 - **`constants.rkt`** — LSP protocol numeric constants (`SymbolKind/Variable`, `TextDocumentSyncKind/Full`, `DiagnosticSeverity/Error`, etc.)
 
