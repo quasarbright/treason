@@ -262,7 +262,6 @@
  (img "inside-bad-use.png" 820 300)
  (para "The outer" (code my-let)
        "is malformed, but we get services in the inner one")
- (para "Powered by the" (code b:expr) "annotation")
  (para "Other languages don't do this!"))
 
 (slide
@@ -651,6 +650,8 @@
 
 (slide
  #:title "Limitations: SSE in Incomplete Context"
+ #:layout 'top
+ (scale sse-code 0.7)
  (para "SSE expands subexpressions in the context of the use")
  (item "No bindings from within the use")
  (item "No syntax parameters established by the macro")

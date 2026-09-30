@@ -264,3 +264,19 @@ fn main() {
 - [x] in services in template explanation, make it more clear that we don't know anything about the internals of a template, it's just a sexpr
 - [x] when you come back to limitations of SSE, say the long name, not the acronym. maybe also remind them what sse is
 - [x] make syntax spec written and spoken order of forms the same. like var _ cons
+- [ ] tighten up. you're 28 minutes
+- [ ] put michael ballantyne's name in the title slide. make sure you mention him verbally
+- [ ] verbally mention drracket and how it's worse. say this is vscode
+- [ ] semicolon squigglies are hard to see. make them triple semicolons or something
+- [ ] slide when we talked about bad rust went on too long, keep it brief
+- [ ] mention lean when you mention rust
+- [ ] when you talk about limitations of SSE, show an actual example with a local variable. like `(mylet ([x]) (+ x y))`
+- [ ] michael said it sounded like you were saying treason doesn't do sse when you present it. don't talk about how without sse it'd give up, that's just confusing
+- [ ] say insert a unique cursor id, not random
+- [ ] if you talk about hygiene for cursors, mention that the cursor gets marked just like any other id. probably just shouldn't mention it.
+- [ ] for services in templates, emphasize that the cursor gets scopes painted like anything else so we get hygiene.
+- [ ] in limitations mention that we don't support side effects right now or stx params
+- [ ] instead of firing missiles, talk about symbol tables since that's a real example
+- [ ] be more brief about OQ future work
+- [ ] don't assume audience knows about syntax spec. brief primer
+- [ ] 
