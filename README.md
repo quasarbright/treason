@@ -50,6 +50,8 @@ Then run it with
 racket program.tsn
 ```
 
+For more programs to try, [`racketcon-examples/`](racketcon-examples/) has the examples from the RacketCon talk, each with notes on what to try in the editor.
+
 You (really, your IDE!) can run the language server (reads JSON-RPC from stdin)
 
 ```bash
@@ -60,10 +62,10 @@ treason-language-server
 
 treason is a small Lisp with hygienic macros. The grammar:
 
-A program is a sequence of expressions.
+A program is a sequence of definitions and expressions. Running a program prints the value of each top-level expression.
 
 ```
-program := expr ...
+program := def-or-expr ...
 
 expr := number
       | boolean
@@ -74,31 +76,43 @@ expr := number
       | (let ([var expr]) expr)
       | (let-syntax ([name macrot]) expr)
       | (block def-or-expr ... expr)   ; must end in an expression
-      | (name expr ...)          ; macro application
-      | (expr expr ...)          ; function application
+      | (name stx ...)                 ; macro application
+      | (expr expr ...)                ; function application
 
 def-or-expr := expr
              | (define var expr)
              | (define-syntax name macrot)
              | (begin def-or-expr ...)
-             | (name expr ...)          ; macro application
+             | (name stx ...)          ; macro application
 
-macrot := (syntax-rules (literal ...) [pattern template] ...)
+stx := any s-expression; the macro decides what it means
 
-; patterns (no ellipsis support yet)
-pattern := _
+macrot := (syntax-rules (literal ...) [(_ pattern ...) template] ...)
+                                       ; the head of each pattern is ignored,
+                                       ; so it can be _ or the macro's name
+
+pattern := _                 ; matches anything, binds nothing
          | pvar
-         | (~var pvar expr)  ; causes optimistic subexpression expansion
+         | (~var pvar expr)  ; annotated: expanded even in a bad use
          | pvar:expr         ; shorthand for (~var pvar expr)
-         | literal
+         | literal           ; listed in syntax-rules' literals
+         | number
+         | boolean
+         | ()
          | (pattern ...)
+         | (pattern . pattern)
+         | (pattern ... pattern <...>)  ; <...> is a literal ellipsis: zero or
+                                        ; more matches, only last in a list
 
-; templates (no ellipsis support yet)
-template := pvar              ; pattern variable reference
-          | var               ; literal identifier (introduced by the macro)
+template := pvar             ; pattern variable reference
+          | var              ; identifier introduced by the macro
           | number
           | boolean
+          | ()
           | (template ...)
+          | (template . template)
+          | (template ... template <...> template ...)
+                             ; repeated once per ellipsis match
 ```
 
 Supported forms: `lambda`, `if`, `let`, `let-syntax`, `define`, `define-syntax`, `block`, `begin`, `syntax-rules`, plus function application and the primitives above.

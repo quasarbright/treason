@@ -1,0 +1,25 @@
+#lang treason
+
+;; Slide: "You Have Errors Most of the Time" (an unfinished definition body)
+;;
+;; The body of magnitude ends in a definition because we haven't written the
+;; final expression yet, so this is an error: a block must end in an
+;; expression. In Racket, expansion stops here and services go away. In
+;; treason, try autocomplete on the empty line in the body: x2, y2 and mag-sq
+;; are all offered.
+;;
+;; treason has no sqr or sqrt, so sqr is defined here. The talk finishes the
+;; body with (sqrt mag-sq); since there's no sqrt, finish it with mag-sq to get
+;; the squared magnitude and make the program run.
+
+(define sqr (lambda (n) (* n n)))
+
+;; Real Real -> Real
+(define magnitude
+  (lambda (x y)
+    (block
+      (define x2 (sqr x))
+      (define y2 (sqr y))
+      (define mag-sq (+ x2 y2))
+
+      )))

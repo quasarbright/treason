@@ -1,0 +1,15 @@
+#lang treason
+
+;; Slide: "Limitations: SSE Can Misalign"
+;;
+;; m expects a 1, a 2, and then an expression. The use forgets the 2, so
+;; treason lines the let up with the 2 and reports that it isn't a 2. The let
+;; is never expanded, so there are no services on it: go-to-definition on the
+;; y in its body finds nothing. treason doesn't tell missing, wrong and extra
+;; subexpressions apart.
+
+(define-syntax m
+  (syntax-rules ()
+    [(m 1 2 e:expr) 1]))
+
+(m 1 (let ([y 4]) y))

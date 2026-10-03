@@ -1,0 +1,13 @@
+#lang treason
+
+;; Slides: "Where Do the Services Come From?"
+;;
+;; The walkthrough program. When expansion reaches the reference to x on the
+;; second line, x and y are in scope and x resolves to the definition above.
+;; The expander records that, and go-to-definition and autocomplete read it
+;; back. This program has no errors, so it also runs. The final y is not on
+;; the slide; it's here so running the program prints something.
+
+(define x 1)
+(define y (+ x 2))
+y

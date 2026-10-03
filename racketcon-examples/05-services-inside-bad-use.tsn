@@ -1,0 +1,15 @@
+#lang treason
+
+;; Slide: "Demo: Services Inside a Bad Macro Use"
+;;
+;; The outer my-let is malformed: ([x]) has no expression for x. The inner
+;; my-let is missing its body, so it's a bad use inside a bad use. Because the
+;; body of my-let is annotated b:expr, treason still expands the inner my-let,
+;; and autocomplete at the missing body offers y.
+
+(define-syntax my-let
+  (syntax-rules ()
+    [(my-let ([x e:expr]) b:expr)
+     (let ([x e]) b)]))
+
+(my-let ([x]) (my-let ([y 2]) ))
