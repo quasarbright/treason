@@ -1,0 +1,24 @@
+#lang treason
+
+;; Slide: "Limitations: SSE with Recursive Macros" (first version)
+;;
+;; The first clause has no body, so this is a bad use. The annotations only
+;; cover the first clause; the rest are a bare clause ... that the recursive
+;; call would handle. A bad use is never expanded, so SSE reaches (> x 0) but
+;; not the second clause: go-to-definition on the x in (< x 0) finds nothing.
+;; Compare with 13-sse-recursive-macro-annotated.tsn.
+;;
+;; treason has no void, so the base case is #f instead of (void), and x is
+;; defined here because the slide leaves it free.
+
+(define-syntax my-cond
+  (syntax-rules ()
+    [(my-cond) #f]
+    [(my-cond [condition:expr body:expr]
+              clause ...)
+     (if condition body (my-cond clause ...))]))
+
+(define x -5)
+
+(my-cond [(> x 0)]
+         [(< x 0) (- x)])

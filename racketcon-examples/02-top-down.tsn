@@ -1,0 +1,28 @@
+#lang treason
+
+;; Slide: "You Have Errors Most of the Time" (top-down style)
+;;
+;; We write student->report before the helpers it calls, so average-grade and
+;; grade->letter are unbound. Racket reports only the first and gives up;
+;; treason reports both and keeps services working everywhere else.
+;;
+;; treason has no structs, so Student and Report are faked with closures: a
+;; record is a function that hands its fields to a selector.
+
+;; A Student has a name and grades
+(define student (lambda (name grades) (lambda (sel) (sel name grades))))
+(define student-name (lambda (s) (s (lambda (name grades) name))))
+(define student-grades (lambda (s) (s (lambda (name grades) grades))))
+
+;; A Report has a name, an average and a letter
+(define report
+  (lambda (name average letter) (lambda (sel) (sel name average letter))))
+
+;; student->report : Student -> Report
+(define student->report
+  (lambda (s)
+    (block
+      (define avg (average-grade (student-grades s)))
+      (report (student-name s)
+              avg
+              (grade->letter avg)))))

@@ -1,0 +1,14 @@
+#lang treason
+
+;; Slide: "Demo: Autocomplete at a Missing Expression"
+;;
+;; The my-let on the last line is missing its body because we're about to write
+;; it, so it's a bad macro use. Ask for autocomplete where the body goes, just
+;; before the closing paren: it offers y, which is bound by the bad use itself.
+
+(define-syntax my-let
+  (syntax-rules ()
+    [(my-let ([x e:expr]) b:expr)
+     (let ([x e]) b)]))
+
+(my-let ([y 2]) )

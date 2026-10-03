@@ -1,0 +1,26 @@
+#lang treason
+
+;; Slide: "Limitations: SSE with Recursive Macros" (second version)
+;;
+;; The same bad use, but the pattern now annotates every clause, so SSE reaches
+;; the second clause too: go-to-definition on any x jumps to its definition.
+;; Better annotations, better SSE.
+;;
+;; treason has no void, so the base case is #f instead of (void), and x is
+;; defined here because the slide leaves it free.
+
+(define-syntax my-cond
+  (syntax-rules ()
+    [(my-cond) #f]
+    [(my-cond [condition:expr body:expr]
+              [condition*:expr
+               body*:expr]
+              ...)
+     (if condition body
+         (my-cond
+          [condition* body*] ...))]))
+
+(define x -5)
+
+(my-cond [(> x 0)]
+         [(< x 0) (- x)])
