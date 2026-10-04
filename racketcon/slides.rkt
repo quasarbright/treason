@@ -649,10 +649,33 @@
 ;; Limitations
 ;; ---------------------------------------------------------------------------
 
+;; A malformed mylet: the binding has no right-hand side, so the pattern fails
+;; and SSE expands the body out of context, where x is unbound. Green pairs the
+;; annotation with the body it expands; red marks the bad binding and the
+;; reference that can't see it.
+(define ctx-annot (code body:expr))
+(define ctx-binding (code [x]))
+(define ctx-ref (code x))
+(define ctx-body (code (add1 #,ctx-ref)))
+(define ctx-code
+  (annotate-box
+   (annotate-box
+    (annotate-fill
+     (code
+      (define-syntax mylet
+        (syntax-rules ()
+          [(mylet ([v rhs:expr]) #,ctx-annot)
+           (let ([v rhs]) body)]))
+      code:blank
+      (mylet (#,ctx-binding) #,ctx-body))
+     (list ctx-annot ctx-body) #:color ANNOT-COLOR)
+    ctx-binding #:color "red")
+   ctx-ref #:color "red"))
+
 (slide
  #:title "Limitations: SSE in Incomplete Context"
  #:layout 'top
- (scale sse-code 0.7)
+ (scale ctx-code 0.7)
  (para "SSE expands subexpressions in the context of the use")
  (item "No bindings from within the use")
  (item "No syntax parameters established by the macro")
@@ -921,7 +944,7 @@
 
 (slide
  #:title "Treason"
- (t "The language and language server are on GitHub")
+ (t "The language and IDE extension are on GitHub")
  (hyperlinkize (t "https://github.com/quasarbright/treason"))
  (blank 20)
  (t "My Math and PL YouTube Channel")

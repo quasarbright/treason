@@ -270,7 +270,7 @@ fn main() {
 - [ ] verbally mention drracket and how it's worse. say this is vscode
 - [ ] slide when we talked about bad rust went on too long, keep it brief
 - [ ] mention lean when you mention rust
-- [ ] when you talk about limitations of SSE, show an actual example with a local variable. like `(mylet ([x]) (+ x y))`
+- [x] when you talk about limitations of SSE, show an actual example with a local variable. like `(mylet ([x]) (+ x y))`
 - [ ] michael said it sounded like you were saying treason doesn't do sse when you present it. don't talk about how without sse it'd give up, that's just confusing
 - [ ] say insert a unique cursor id, not random
 - [ ] if you talk about hygiene for cursors, mention that the cursor gets marked just like any other id. probably just shouldn't mention it.
