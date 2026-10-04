@@ -1,0 +1,15 @@
+#lang treason
+
+;; Slides: "Demo: Services in a Macro Template" and "Services in Macro Templates"
+;;
+;; The let in m's template is missing its body. Autocomplete there offers the
+;; pattern variable p, the macro-introduced x, and m from the definition site,
+;; but not y: the template's let body is macro-introduced, so hygiene keeps the
+;; use site's y out of scope. Go-to-definition and find-references work in the
+;; template too. These template services come from expanding the use (m 2).
+
+(define-syntax m
+  (syntax-rules ()
+    [(m p) (let ([x p]) )]))
+
+(let ([y 1]) (m 2))

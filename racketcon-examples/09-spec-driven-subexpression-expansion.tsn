@@ -1,0 +1,24 @@
+#lang treason
+
+;; Slides: "The Fix", "The Hard Part: Inside a Bad Macro Use" and
+;; "Spec-Driven Subexpression Expansion"
+;;
+;; The header of the my-define use is empty: no function name, no parameters.
+;; The macro can't expand, but body:expr says each body form is an expression,
+;; so treason expands the body on its own and you get services in it.
+;;
+;; You can see that from the errors: besides the bad use, treason reports sqrt,
+;; sqr, x and y as unbound, which it can only know by expanding the body. (x
+;; and y would be parameters if the header were there, and treason has no sqrt
+;; or sqr.)
+
+(define-syntax my-define
+  (syntax-rules ()
+    [(my-define (f x ...)
+       body:expr ...)
+     (define f
+       (lambda (x ...)
+         (block body ...)))]))
+
+(my-define ()
+  (sqrt (+ (sqr x) (sqr y))))

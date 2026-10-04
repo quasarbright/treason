@@ -1,0 +1,19 @@
+#lang treason
+
+;; Slide: "Limitations: SSE in Incomplete Context"
+;;
+;; The slide reuses the my-define example. This file uses the example the
+;; talk notes suggest instead, since it shows the limitation directly. The bad
+;; my-let use is missing x's expression, so treason expands the body on its
+;; own, in the context of the use. The binding of x would come from inside the
+;; use, so in that context x is reported unbound even though the macro would
+;; bind it.
+
+(define-syntax my-let
+  (syntax-rules ()
+    [(my-let ([x e:expr]) b:expr)
+     (let ([x e]) b)]))
+
+(define y 1)
+
+(my-let ([x]) (+ x y))

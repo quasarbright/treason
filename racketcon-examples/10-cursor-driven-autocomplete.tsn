@@ -1,0 +1,9 @@
+#lang treason
+
+;; Slides: "Cursor-Driven Autocomplete"
+;;
+;; The let has no body yet. Ask for autocomplete just before the closing paren:
+;; treason inserts a cursor identifier there, expands the program, and offers
+;; what was in scope when the cursor failed to resolve, which is x.
+
+(let ([x 1]) )

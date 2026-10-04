@@ -1,0 +1,13 @@
+#lang treason
+
+;; Slide: "Treason" (the first look at the language)
+;;
+;; Two definitions reference an unbound variable. treason reports both errors,
+;; and autocomplete on the empty line at the end still offers a, b, c and d,
+;; including b and c even though their definitions are broken.
+
+(define a 1)
+(define b unbound-ref)
+(define c unbound-ref)
+(define d 1)
+

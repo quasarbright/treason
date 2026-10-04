@@ -1,0 +1,17 @@
+#lang treason
+
+;; Slides: "Fault-Tolerant Expansion"
+;;
+;; (define1 x) means (define x 1). The second use is missing its variable, so
+;; it's a bad use. treason replaces it with an error sentinel and keeps
+;; expanding, so (define1 y) still defines y: try go-to-definition on y below.
+
+(define-syntax define1
+  (syntax-rules ()
+    [(define1 x) (define x 1)]))
+
+(define1 x)
+(define1)
+(define1 y)
+
+(+ x y)
